@@ -690,6 +690,29 @@ When LITERAL is non-nil, write without coding conversion."
         (should-not (buffer-narrowed-p))
         (should (= (line-number-at-pos) 1))))))
 
+(ert-deftest tagaria-occurrence-position-reveals-folded-org-context ()
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Parent\n** Child\nBody @{tag}\n")
+    (goto-char (point-min))
+    (org-fold-hide-subtree)
+    (tagaria--goto-occurrence-position
+     (tagaria-occurrence-create :tag "tag" :line 3 :column 5))
+    (should (looking-at-p (regexp-quote "@{tag}")))
+    (should-not (invisible-p (point)))))
+
+(ert-deftest tagaria-occurrence-position-reveals-folded-markdown-entry ()
+  (skip-unless (require 'markdown-mode nil t))
+  (with-temp-buffer
+    (markdown-mode)
+    (insert "# Parent\n\n## Child\n\nBody @{tag}\n")
+    (goto-char (point-min))
+    (outline-hide-subtree)
+    (tagaria--goto-occurrence-position
+     (tagaria-occurrence-create :tag "tag" :line 5 :column 5))
+    (should (looking-at-p (regexp-quote "@{tag}")))
+    (should-not (invisible-p (point)))))
+
 (ert-deftest tagaria-list-buffers-are-scoped-by-realm ()
   (tagaria-test-with-realm
     (let ((other-root

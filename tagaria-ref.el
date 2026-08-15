@@ -39,11 +39,21 @@
                return (match-string-no-properties 1)))))
 
 (defun tagaria--goto-occurrence-position (occurrence)
-  "Move point to OCCURRENCE in the current buffer."
+  "Move point to OCCURRENCE and reveal it in the current buffer."
   (widen)
   (goto-char (point-min))
   (forward-line (1- (tagaria-occurrence-line occurrence)))
-  (move-to-column (tagaria-occurrence-column occurrence)))
+  (move-to-column (tagaria-occurrence-column occurrence))
+  ;; Let each markup mode reveal its own folds.  Keep these integrations
+  ;; optional: loading Tagaria must not load Org or Markdown Mode.
+  (when (invisible-p (point))
+    (cond
+     ((and (derived-mode-p 'org-mode)
+           (fboundp 'org-fold-show-context))
+      (funcall 'org-fold-show-context 'link-search))
+     ((and (derived-mode-p 'markdown-mode)
+           (fboundp 'markdown-show-entry))
+      (funcall 'markdown-show-entry)))))
 
 (defun tagaria--tag-text-regexp (tag)
   "Return a regexp matching TAG's rendered text plus surrounding blanks."

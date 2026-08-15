@@ -53,9 +53,6 @@
 (defvar-local tagaria--scan nil
   "Most recent `tagaria-scan' represented by the current list buffer.")
 
-(defvar-local tagaria--entry-filter #'identity
-  "Predicate selecting entries shown in the current Tagaria list.")
-
 (defvar-local tagaria--edited-tag nil
   "Tag whose description is being edited in the current buffer.")
 
@@ -88,7 +85,7 @@
 (defun tagaria--completion-annotation (candidate entries)
   "Return a description annotation for CANDIDATE found in ENTRIES."
   (when-let ((entry (assoc candidate entries)))
-    (when-let ((description (plist-get (cdr entry) :desc)))
+    (when-let ((description (tagaria--entry-desc entry)))
       (propertize
        (concat "  " (tagaria--desc-summary description))
        'face 'shadow))))
@@ -137,7 +134,7 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
   "Build a tabulated row from ENTRY, OCCURRENCE-TABLE, and RELATION-TABLE."
   (let* ((name (car entry))
          (occurrences (length (gethash name occurrence-table)))
-         (description (plist-get (cdr entry) :desc))
+         (description (tagaria--entry-desc entry))
          (related (gethash name relation-table)))
     (list name
           (vector
@@ -153,9 +150,7 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
 
 (defun tagaria--render-entries ()
   "Build rows from this list buffer's cached scan and entries."
-  (let* ((entries (seq-filter
-                   tagaria--entry-filter
-                   (tagaria-scan-entries tagaria--scan)))
+  (let* ((entries (tagaria-scan-entries tagaria--scan))
          (table (tagaria-scan-occurrence-table tagaria--scan))
          (relation-table (tagaria-scan-relations tagaria--scan)))
     (setq tabulated-list-entries
@@ -274,20 +269,16 @@ Leave point unchanged and return nil when TAG is absent."
   (tabulated-list-init-header)
   (hl-line-mode 1))
 
-(defun tagaria--prepare-list-buffer
-    (root &optional predicate buffer-name scan)
+(defun tagaria--prepare-list-buffer (root &optional scan)
   "Return ROOT's initialized Tagaria list buffer.
-PREDICATE and BUFFER-NAME describe an optional filtered list.  SCAN avoids
-rescanning when the caller already has current data."
+SCAN avoids rescanning when the caller already has current data."
   (let ((buffer
          (get-buffer-create
-          (tagaria--scoped-buffer-name
-           (or buffer-name tagaria-buffer-name) root))))
+          (tagaria--scoped-buffer-name tagaria-buffer-name root))))
     (with-current-buffer buffer
       (unless (derived-mode-p 'tagaria-mode)
         (tagaria-mode))
-      (setq tagaria--buffer-root root
-            tagaria--entry-filter (or predicate #'identity))
+      (setq tagaria--buffer-root root)
       (setq default-directory root)
       (if scan
           (progn
@@ -297,10 +288,9 @@ rescanning when the caller already has current data."
         (tabulated-list-revert)))
     buffer))
 
-(defun tagaria--open-list (root &optional predicate buffer-name)
-  "Open ROOT's Tagaria list filtered by PREDICATE in BUFFER-NAME."
-  (let ((buffer (tagaria--prepare-list-buffer
-                 root predicate buffer-name)))
+(defun tagaria--open-list (root)
+  "Open ROOT's Tagaria list."
+  (let ((buffer (tagaria--prepare-list-buffer root)))
     (pop-to-buffer buffer)
     buffer))
 
@@ -497,7 +487,7 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a realm without changing
          (list-buffer
           (if from-list
               (current-buffer)
-            (tagaria--prepare-list-buffer root nil nil scan))))
+            (tagaria--prepare-list-buffer root scan))))
     (unless from-list
       (with-current-buffer list-buffer
         (tagaria--goto-tag-row name)))
@@ -511,8 +501,7 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a realm without changing
          (scan (tagaria-sync root))
          (entries (tagaria-scan-entries scan))
          (tag (tagaria--read-tag entries "Search tag: " t))
-         (list-buffer (tagaria--prepare-list-buffer
-                       root nil nil scan)))
+         (list-buffer (tagaria--prepare-list-buffer root scan)))
     (with-current-buffer list-buffer
       (tagaria--goto-tag-row tag))
     (tagaria--open-detail root tag scan list-buffer)))
@@ -530,6 +519,16 @@ Abort when any answer is not yes.  Return non-nil if one was saved."
         (save-buffer))
       (setq saved t))
     saved))
+
+(defun tagaria--settled-occurrences (root name operation)
+  "Return NAME's occurrences in ROOT once buffers are settled for OPERATION.
+Offer to save any modified buffer holding an occurrence, and rescan when one
+was saved, so the returned set matches what is on disk."
+  (let* ((scan (tagaria-sync root))
+         (occurrences (gethash name (tagaria-scan-occurrence-table scan))))
+    (if (tagaria--save-modified-occurrence-buffers occurrences operation)
+        (gethash name (tagaria-scan-occurrence-table (tagaria-sync root)))
+      occurrences)))
 
 (defun tagaria--show-operation-preview (title root occurrences empty-message)
   "Show TITLE and OCCURRENCES in ROOT, using EMPTY-MESSAGE when empty."
@@ -573,13 +572,7 @@ a user error containing CANCELLED when confirmation is declined."
          (new (or new-name
                   (string-trim
                    (read-string (format "Rename %s to: " old) old))))
-         (scan (tagaria-sync root))
-         (occurrences
-          (gethash old (tagaria-scan-occurrence-table scan))))
-    (when (tagaria--save-modified-occurrence-buffers occurrences "rename")
-      (setq scan (tagaria-sync root)
-            occurrences
-            (gethash old (tagaria-scan-occurrence-table scan))))
+         (occurrences (tagaria--settled-occurrences root old "rename")))
     (let ((signature (tagaria--occurrence-signature occurrences)))
       (tagaria--confirm-with-preview
        :title (format "Rename %s → %s" old new)
@@ -607,16 +600,10 @@ a user error containing CANCELLED when confirmation is declined."
   (interactive)
   (let* ((root (tagaria--context-root))
          (name (or tag (tagaria--read-context-tag "Clear tag references: ")))
-         (scan (tagaria-sync root))
          (occurrences
-          (gethash name (tagaria-scan-occurrence-table scan))))
+          (tagaria--settled-occurrences root name "reference deletion")))
     (if (null occurrences)
         (message "%s already has no textual references" name)
-      (when (tagaria--save-modified-occurrence-buffers
-             occurrences "reference deletion")
-        (setq scan (tagaria-sync root)
-              occurrences
-              (gethash name (tagaria-scan-occurrence-table scan))))
       (tagaria--confirm-with-preview
        :title (format "Delete every reference to %s" name)
        :root root
@@ -644,14 +631,8 @@ a user error containing CANCELLED when confirmation is declined."
   (interactive)
   (let* ((root (tagaria--context-root))
          (name (or tag (tagaria--read-context-tag "Delete tag: ")))
-         (scan (tagaria-sync root))
          (occurrences
-          (gethash name (tagaria-scan-occurrence-table scan))))
-    (when (tagaria--save-modified-occurrence-buffers
-           occurrences "tag deletion")
-      (setq scan (tagaria-sync root)
-            occurrences
-            (gethash name (tagaria-scan-occurrence-table scan))))
+          (tagaria--settled-occurrences root name "tag deletion")))
     (if occurrences
         (tagaria--confirm-with-preview
          :title (format "Delete tag %s and every reference" name)

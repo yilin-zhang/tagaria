@@ -140,21 +140,20 @@ tag and returns a string, normally either an empty string or one space."
       (user-error "Tagaria directory does not exist: %s" candidate))
     (file-name-as-directory (file-truename candidate))))
 
+(defun tagaria--realm-path (root name what)
+  "Return NAME expanded inside ROOT, describing it as WHAT on error.
+NAME must be a plain base name so that it cannot escape ROOT."
+  (unless (equal name (file-name-nondirectory name))
+    (error "Tagaria %s must not contain directories: %s" what name))
+  (expand-file-name name root))
+
 (defun tagaria--database-path (root)
   "Return the Tagaria database path inside ROOT."
-  (unless (equal tagaria-database-file-name
-                 (file-name-nondirectory tagaria-database-file-name))
-    (error "Tagaria database name must not contain directories: %s"
-           tagaria-database-file-name))
-  (expand-file-name tagaria-database-file-name root))
+  (tagaria--realm-path root tagaria-database-file-name "database name"))
 
 (defun tagaria--backup-root (root)
   "Return the backup directory path inside ROOT."
-  (unless (equal tagaria-backup-directory-name
-                 (file-name-nondirectory tagaria-backup-directory-name))
-    (error "Tagaria backup name must not contain directories: %s"
-           tagaria-backup-directory-name))
-  (expand-file-name tagaria-backup-directory-name root))
+  (tagaria--realm-path root tagaria-backup-directory-name "backup name"))
 
 (defun tagaria--empty-database ()
   "Return a new empty Tagaria database value."
@@ -174,7 +173,7 @@ tag and returns a string, normally either an empty string or one space."
     (list second first)))
 
 (defun tagaria--edge-less-p (left right)
-  "Return non-nil when edge LEFT sorts before edge RIGHT."
+  "Return non-nil when edge LEFT belongs before edge RIGHT."
   (or (string-lessp (car left) (car right))
       (and (string= (car left) (car right))
            (string-lessp (cadr left) (cadr right)))))
@@ -249,14 +248,13 @@ Signal an error without modifying PATH when the value is malformed."
           :related (tagaria--validate-related
                     (or (plist-get database :related) nil) tags path))))
 
-(defun tagaria--read-single-form (source &optional allow-empty)
-  "Read the only Lisp form in the current buffer, named by SOURCE.
-Return nil for an empty buffer when ALLOW-EMPTY is non-nil."
+(defun tagaria--read-single-form (source)
+  "Read the only Lisp form in the current buffer, named by SOURCE."
   (goto-char (point-min))
   (with-syntax-table lisp-data-mode-syntax-table
     (forward-comment (buffer-size))
     (if (eobp)
-        (if allow-empty nil (error "No Lisp form in %s" source))
+        (error "No Lisp form in %s" source)
       (let ((value
              (condition-case nil
                  (read (current-buffer))
@@ -358,21 +356,29 @@ Return nil for an empty buffer when ALLOW-EMPTY is non-nil."
   (copy-tree
    (plist-get (tagaria--read-database (tagaria--root directory)) :tags)))
 
+(defun tagaria--entry-desc (entry)
+  "Return ENTRY's description, or nil."
+  (plist-get (cdr entry) :desc))
+
+(defun tagaria--require-entry (database name)
+  "Return NAME's entry in DATABASE, or signal that NAME is unknown."
+  (or (tagaria--entry database name)
+      (user-error "Unknown Tagaria tag: %s" name)))
+
 (defun tagaria-desc (name &optional directory)
   "Return NAME's description in DIRECTORY, or nil."
   (when-let ((entry (tagaria--entry
                      (tagaria--read-database (tagaria--root directory)) name)))
-    (plist-get (cdr entry) :desc)))
+    (tagaria--entry-desc entry)))
 
 (defun tagaria-set-desc (name description &optional directory)
   "Set NAME's optional string DESCRIPTION in DIRECTORY and return it."
   (let* ((description (tagaria--normalize-desc description))
          (root (tagaria--root directory))
          (database (tagaria--read-database root)))
-    (unless (tagaria--entry database name)
-      (user-error "Unknown Tagaria tag: %s" name))
     (unless (equal description
-                   (plist-get (cdr (tagaria--entry database name)) :desc))
+                   (tagaria--entry-desc
+                    (tagaria--require-entry database name)))
       (tagaria--write-database
        root (tagaria--set-entry database name description)))
     description))
@@ -402,15 +408,15 @@ An existing description is preserved.  Return NAME."
                      #'tagaria--edge-less-p))))
 
 (defun tagaria-set-related (first second present &optional directory)
-  "Set the undirected relation between FIRST and SECOND to PRESENT."
+  "Set the undirected relation between FIRST and SECOND to PRESENT.
+Operate on DIRECTORY's realm, defaulting to the configured one."
   (when (string= first second)
     (user-error "A Tagaria tag cannot be related to itself"))
   (let* ((root (tagaria--root directory))
          (database (tagaria--read-database root))
          (edge (tagaria--canonical-edge first second)))
     (dolist (name (list first second))
-      (unless (tagaria--entry database name)
-        (user-error "Unknown Tagaria tag: %s" name)))
+      (tagaria--require-entry database name))
     (unless (eq (and (member edge (plist-get database :related)) t)
                 (and present t))
       (tagaria--write-database
@@ -428,8 +434,7 @@ Signal a `user-error' when NAME still has textual occurrences."
       (user-error "Cannot remove %s; it still has %s"
                   name (tagaria--count-phrase
                         (length occurrences) "occurrence")))
-    (unless (tagaria--entry database name)
-      (user-error "Unknown Tagaria tag: %s" name))
+    (tagaria--require-entry database name)
     (tagaria--write-database root (tagaria--delete-entry database name))
     name))
 
@@ -690,13 +695,16 @@ and characters from the same script receive no separator."
             (insert separator)))))))
   1)
 
+(defun tagaria--occurrence-key (occurrence)
+  "Return the identity tuple of OCCURRENCE, or nil when it is nil."
+  (when occurrence
+    (list (tagaria-occurrence-file occurrence)
+          (tagaria-occurrence-start occurrence)
+          (tagaria-occurrence-end occurrence))))
+
 (defun tagaria--occurrence-signature (occurrences)
   "Return a stable comparison signature for OCCURRENCES."
-  (mapcar (lambda (occurrence)
-            (list (tagaria-occurrence-file occurrence)
-                  (tagaria-occurrence-start occurrence)
-                  (tagaria-occurrence-end occurrence)))
-          occurrences))
+  (mapcar #'tagaria--occurrence-key occurrences))
 
 (defun tagaria--occurrence-files (occurrences)
   "Return the unique files represented by OCCURRENCES."
@@ -704,12 +712,9 @@ and characters from the same script receive no separator."
 
 (defun tagaria--modified-buffers-for-occurrences (occurrences)
   "Return modified visiting buffers for files in OCCURRENCES."
-  (let (buffers)
-    (dolist (file (tagaria--occurrence-files occurrences))
-      (when-let ((buffer (find-buffer-visiting file)))
-        (when (buffer-modified-p buffer)
-          (push buffer buffers))))
-    (nreverse buffers)))
+  (seq-filter #'buffer-modified-p
+              (seq-keep #'find-buffer-visiting
+                        (tagaria--occurrence-files occurrences))))
 
 (defun tagaria--make-backup-directory (root)
   "Create and return a unique rename backup directory below ROOT."
@@ -1002,10 +1007,7 @@ MODIFY runs in a buffer containing FILE and returns its number of changes."
   "Delete OCCURRENCES from the current buffer, from last to first."
   (let ((count 0))
     (dolist (occurrence
-             (sort (copy-sequence occurrences)
-                   (lambda (left right)
-                     (> (tagaria-occurrence-start left)
-                        (tagaria-occurrence-start right)))))
+             (seq-sort-by #'tagaria-occurrence-start #'> occurrences))
       (cl-incf count (tagaria--delete-occurrence-text occurrence)))
     count))
 
@@ -1020,8 +1022,7 @@ EXPECTED-SIGNATURE, when non-nil, must match the current references."
            (gethash name (tagaria-scan-occurrence-table scan))))
          (signature (tagaria--occurrence-signature occurrences))
          (database (tagaria--read-database root)))
-    (unless (tagaria--entry database name)
-      (user-error "Unknown Tagaria tag: %s" name))
+    (tagaria--require-entry database name)
     (when (and expected-signature
                (not (equal expected-signature signature)))
       (user-error "Tagaria occurrences changed after confirmation; retry"))
@@ -1088,7 +1089,7 @@ EXPECTED-SIGNATURE, when non-nil, guards the confirmed reference set."
     (root database old-name new-name)
   "Move OLD-NAME and its relations to NEW-NAME in DATABASE below ROOT."
   (let* ((old-entry (tagaria--entry database old-name))
-         (description (plist-get (cdr old-entry) :desc))
+         (description (tagaria--entry-desc old-entry))
          (relations (tagaria--rename-relations
                      (plist-get database :related) old-name new-name)))
     (setq database (tagaria--delete-entry database old-name))
@@ -1126,8 +1127,7 @@ Refuse modified visiting buffers.  Return a plist containing :count and
            (occurrences (copy-sequence (gethash old-name table)))
            (current-signature (tagaria--occurrence-signature occurrences))
            (database (tagaria--read-database root)))
-      (unless (tagaria--entry database old-name)
-        (user-error "Unknown Tagaria tag: %s" old-name))
+      (tagaria--require-entry database old-name)
       (when (tagaria--entry database new-name)
         (user-error "Tagaria tag already exists: %s" new-name))
       (when (and expected-signature

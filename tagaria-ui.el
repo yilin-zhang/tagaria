@@ -107,23 +107,22 @@ Line breaks use the same visible marker convention as Decklet hints."
 
 (defun tagaria--interactive-desc-text (text tag)
   "Return a copy of TEXT with description interaction properties for TAG."
-  (setq text (copy-sequence text))
-  (add-text-properties
-   0 (length text)
-   `(tagaria-description-tag ,tag
-                             mouse-face highlight
-                             help-echo "mouse-1 or RET: edit description"
-                             keymap ,tagaria-description-text-map
-                             follow-link t)
-   text)
-  text)
+  (propertize text
+              'tagaria-description-tag tag
+              'mouse-face 'highlight
+              'help-echo "mouse-1 or RET: edit description"
+              'keymap tagaria-description-text-map
+              'follow-link t))
 
-(defun tagaria--desc-display (description tag)
-  "Return DESCRIPTION as interactive display text for TAG."
+(defun tagaria--desc-display (description tag &optional full)
+  "Return DESCRIPTION as interactive display text for TAG.
+Summarize it to a single line unless FULL is non-nil."
   (tagaria--interactive-desc-text
-   (if (and description (not (string-empty-p description)))
-       (tagaria--desc-summary description)
+   (cond
+    ((or (null description) (string-empty-p description))
      (propertize "(empty)" 'face 'shadow))
+    (full description)
+    (t (tagaria--desc-summary description)))
    tag))
 
 (defun tagaria--insert-related-tags (related)
@@ -156,31 +155,28 @@ Line breaks use the same visible marker convention as Decklet hints."
     (insert "\n")
     (add-text-properties start (point) `(tagaria-section ,section))))
 
-(defun tagaria--occurrence-display-context (occurrence)
-  "Return OCCURRENCE context without repetitions of its tag text."
+(defun tagaria--tag-text-regexp (tag)
+  "Return a regexp matching TAG's rendered text plus surrounding blanks."
+  (concat "[[:blank:]]*" (regexp-quote (tagaria--format-tag tag))
+          "[[:blank:]]*"))
+
+(defun tagaria--occurrence-display-context (occurrence regexp)
+  "Return OCCURRENCE context with REGEXP occurrences of its own tag removed."
   (string-trim
    (replace-regexp-in-string
-    (concat "[[:blank:]]*"
-            (regexp-quote
-             (tagaria--format-tag (tagaria-occurrence-tag occurrence)))
-            "[[:blank:]]*")
-    " " (tagaria-occurrence-context occurrence) t)))
+    regexp " " (tagaria-occurrence-context occurrence) t)))
 
 (defun tagaria--render-tag-page (tag root description related occurrences)
   "Render TAG in ROOT with DESCRIPTION, RELATED tags, and OCCURRENCES."
   ;; This is the sole renderer for focused Detail pages.  Interactive text
   ;; properties define RET/mouse zones; section properties define folding.
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (tag-regexp (tagaria--tag-text-regexp tag)))
     (erase-buffer)
     (insert (propertize tag 'face 'tagaria-tag-face) "\n\n")
     (insert (propertize root 'face 'tagaria-path-face) "\n\n")
     (tagaria--insert-section-heading 'description "Description")
-    (insert (tagaria--interactive-desc-text
-             (if (and description (not (string-empty-p description)))
-                 description
-               (propertize "(empty)" 'face 'shadow))
-             tag)
-            "\n")
+    (insert (tagaria--desc-display description tag t) "\n")
     (insert "\n")
     (tagaria--insert-section-heading 'related "Related Tags")
     (tagaria--insert-related-tags related)
@@ -190,7 +186,8 @@ Line breaks use the same visible marker convention as Decklet hints."
     (if occurrences
         (dolist (occurrence occurrences)
           (let ((start (point))
-                (context (tagaria--occurrence-display-context occurrence)))
+                (context (tagaria--occurrence-display-context
+                          occurrence tag-regexp)))
             (insert (format "%-34s "
                             (file-relative-name
                              (tagaria-occurrence-file occurrence) root))

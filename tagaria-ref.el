@@ -46,7 +46,6 @@
 (declare-function tagaria-add-related-tag "tagaria")
 (declare-function tagaria-delete-related-tag "tagaria")
 (declare-function tagaria-rename "tagaria")
-(declare-function tagaria--render-tag-page "tagaria-ui")
 
 (defvar tagaria-detail-buffer-name)
 
@@ -300,13 +299,6 @@
             (push section collapsed))))
       collapsed)))
 
-(defun tagaria--detail-occurrence-key (occurrence)
-  "Return a stable display key for OCCURRENCE."
-  (when occurrence
-    (list (tagaria-occurrence-file occurrence)
-          (tagaria-occurrence-start occurrence)
-          (tagaria-occurrence-end occurrence))))
-
 (defun tagaria--detail-position-key ()
   "Return the semantic position represented by point in a detail page."
   ;; Renders can change line lengths.  Preserve the UI object under point,
@@ -319,7 +311,7 @@
                                     'tagaria-section)))
     (cond
      (occurrence
-      (list 'occurrence (tagaria--detail-occurrence-key occurrence)))
+      (list 'occurrence (tagaria--occurrence-key occurrence)))
      (related (list 'related related))
      (description (list 'description description))
      (section (list 'section section)))))
@@ -331,7 +323,7 @@
     (while (and (not found) (not (eobp)))
       (when-let ((occurrence (tagaria--occurrence-at-point)))
         (unless first (setq first (point)))
-        (when (equal key (tagaria--detail-occurrence-key occurrence))
+        (when (equal key (tagaria--occurrence-key occurrence))
           (setq found (point))))
       (unless found (forward-line 1)))
     (goto-char (or found first (point-min)))))
@@ -580,7 +572,7 @@ is non-nil, update only the cached state."
         (setq tagaria--detail-list-buffer list-buffer))
       (unless no-render
         (tagaria--render-detail
-         (plist-get (cdr (assoc tag (tagaria-scan-entries scan))) :desc)
+         (tagaria--entry-desc (assoc tag (tagaria-scan-entries scan)))
          (gethash tag (tagaria-scan-relations scan))
          (gethash tag (tagaria-scan-occurrence-table scan)))))
     buffer))

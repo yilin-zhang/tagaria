@@ -44,7 +44,7 @@ When LITERAL is non-nil, write without coding conversion."
   (dolist (buffer (buffer-list))
     (let ((file (buffer-local-value 'buffer-file-name buffer))
           (realm (and (local-variable-p 'tagaria--buffer-root buffer)
-                     (buffer-local-value 'tagaria--buffer-root buffer))))
+                      (buffer-local-value 'tagaria--buffer-root buffer))))
       (when (or (and file (file-in-directory-p file root))
                 (and realm (file-equal-p realm root)))
         (with-current-buffer buffer
@@ -311,8 +311,7 @@ When LITERAL is non-nil, write without coding conversion."
   (tagaria-test-with-realm
     (tagaria-register "alpha" nil root)
     (let* ((scan (tagaria-sync root))
-           (list-buffer (tagaria--prepare-list-buffer
-                         root nil nil scan))
+           (list-buffer (tagaria--prepare-list-buffer root scan))
            (detail
             (save-window-excursion
               (tagaria--open-detail
@@ -528,8 +527,7 @@ When LITERAL is non-nil, write without coding conversion."
       (tagaria-set-desc "beta" "" root)
       (should-not (tagaria-desc "beta" root))
       (setq scan (tagaria-sync root))
-      (let ((list-buffer (tagaria--prepare-list-buffer
-                          root nil nil scan)))
+      (let ((list-buffer (tagaria--prepare-list-buffer root scan)))
         (unwind-protect
             (save-window-excursion
               (delete-other-windows)
@@ -628,8 +626,7 @@ When LITERAL is non-nil, write without coding conversion."
     (let* ((_first (tagaria-test--write-file root "a.txt" "@{shared}\n"))
            (second (tagaria-test--write-file root "b.txt" "@{shared}\n"))
            (scan (tagaria-sync root))
-           (list-buffer (tagaria--prepare-list-buffer
-                         root nil nil scan))
+           (list-buffer (tagaria--prepare-list-buffer root scan))
            (origin (generate-new-buffer " *tagaria-origin-test*")))
       (tagaria-set-desc "shared" "Common topic" root)
       (setq scan (tagaria-sync root))

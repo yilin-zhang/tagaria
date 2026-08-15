@@ -39,20 +39,20 @@ When LITERAL is non-nil, write without coding conversion."
     (insert-file-contents file)
     (buffer-string)))
 
-(defun tagaria-test--kill-silo-buffers (root)
+(defun tagaria-test--kill-realm-buffers (root)
   "Kill file-visiting buffers below temporary ROOT."
   (dolist (buffer (buffer-list))
     (let ((file (buffer-local-value 'buffer-file-name buffer))
-          (silo (and (local-variable-p 'tagaria--silo-root buffer)
-                     (buffer-local-value 'tagaria--silo-root buffer))))
+          (realm (and (local-variable-p 'tagaria--buffer-root buffer)
+                     (buffer-local-value 'tagaria--buffer-root buffer))))
       (when (or (and file (file-in-directory-p file root))
-                (and silo (file-equal-p silo root)))
+                (and realm (file-equal-p realm root)))
         (with-current-buffer buffer
           (set-buffer-modified-p nil))
         (kill-buffer buffer)))))
 
-(defmacro tagaria-test-with-silo (&rest body)
-  "Evaluate BODY with a fresh temporary Tagaria silo bound as `root'."
+(defmacro tagaria-test-with-realm (&rest body)
+  "Evaluate BODY with a fresh temporary Tagaria realm bound as `root'."
   (declare (indent 0) (debug t))
   `(let* ((root (file-name-as-directory (make-temp-file "tagaria-test-" t)))
           (tagaria-directory root)
@@ -63,35 +63,38 @@ When LITERAL is non-nil, write without coding conversion."
            '(".git" ".hg" ".svn" ".bzr" "CVS")))
      (unwind-protect
          (progn ,@body)
-       (tagaria-test--kill-silo-buffers root)
+       (tagaria-test--kill-realm-buffers root)
        (when (file-directory-p root)
          (delete-directory root t)))))
 
 (ert-deftest tagaria-database-round-trips-description-and-relations ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (tagaria-register "alpha" "First line\nSecond line" root)
     (tagaria-register "beta" nil root)
     (tagaria-set-related "alpha" "beta" t root)
-    (should (equal (tagaria-description "alpha" root)
+    (should (equal (tagaria-desc "alpha" root)
                    "First line\nSecond line"))
     (should (equal (tagaria-related-tags "alpha" root) '("beta")))
     (should (equal (tagaria-related-tags "beta" root) '("alpha")))
+    (should (equal (plist-get (tagaria--read-database root) :related)
+                   '(("alpha" "beta"))))
     (should (file-exists-p (expand-file-name ".tagaria.eld" root)))
     (should (equal (mapcar #'car (tagaria-tags root)) '("alpha" "beta")))))
 
-(ert-deftest tagaria-description-must-be-a-string ()
-  (tagaria-test-with-silo
+(ert-deftest tagaria-desc-must-be-a-string ()
+  (tagaria-test-with-realm
     (tagaria-register "alpha" "keep" root)
-    (should-error (tagaria-set-description "alpha" 5 root))
-    (should (equal (tagaria-description "alpha" root) "keep"))))
+    (should-error (tagaria-set-desc "alpha" 5 root))
+    (should (equal (tagaria-desc "alpha" root) "keep"))))
 
-(ert-deftest tagaria-migrates-only-legacy-description-with-a-backup ()
-  (tagaria-test-with-silo
+(ert-deftest tagaria-migrates-legacy-description-and-relations-with-a-backup ()
+  (tagaria-test-with-realm
     (tagaria-test--write-file
      root ".tagaria.eld"
      (concat
-      "(:version 1 :tags ((\"old\" :desc (\"line one\" \"line two\") :score 9)"
-      " (\"peer\")) :related ((\"old\" \"peer\") (\"peer\" \"old\")))"))
+      "(:version 1 :tags ((\"old\" :desc (\"line one\" \"line two\")"
+      " :score 9 :related (\"third\")) (\"peer\") (\"third\"))"
+      " :related ((\"old\" \"peer\") (\"peer\" \"old\")))"))
     (should-error (tagaria-tags root))
     (let* ((result (tagaria-migrate-database root))
            (backup (plist-get result :backup)))
@@ -101,12 +104,17 @@ When LITERAL is non-nil, write without coding conversion."
        (plist-member (tagaria--read-one-form
                       (expand-file-name tagaria-database-file-name root))
                      :version))
-      (should (equal (tagaria-description "old" root)
+      (should (equal (tagaria-desc "old" root)
                      "line one, line two"))
-      (should (equal (tagaria-related-tags "old" root) '("peer"))))))
+      (should (equal (tagaria-related-tags "old" root)
+                     '("peer" "third")))
+      (should (equal (plist-get result :dropped) '(:score :version)))
+      (let ((second (tagaria-migrate-database root)))
+        (should (plist-get second :current))
+        (should-not (plist-get second :backup))))))
 
 (ert-deftest tagaria-malformed-database-is-not-overwritten ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let* ((path (tagaria-test--write-file
                   root ".tagaria.eld" "(:tags ((\"bad\" :field)))"))
            (before (tagaria-test--file-string path)))
@@ -114,13 +122,13 @@ When LITERAL is non-nil, write without coding conversion."
       (should (string= before (tagaria-test--file-string path))))))
 
 (ert-deftest tagaria-database-rejects-incomplete-trailing-form ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (tagaria-test--write-file
      root ".tagaria.eld" "(:tags nil) (")
     (should-error (tagaria-tags root))))
 
 (ert-deftest tagaria-write-refuses-modified-database-buffer ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (tagaria-register "existing" nil root)
     (let* ((path (expand-file-name ".tagaria.eld" root))
            (before (tagaria-test--file-string path))
@@ -133,7 +141,7 @@ When LITERAL is non-nil, write without coding conversion."
       (should (buffer-modified-p buffer)))))
 
 (ert-deftest tagaria-sync-discovers-text-and-skips-excluded-content ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (tagaria-test--write-file root "one.org" "First @{alpha}\n")
     (tagaria-test--write-file root "sub/two.md" "@{beta} then @{alpha}\n")
     (tagaria-test--write-file root ".git/ignored.txt" "@{ignored}\n")
@@ -149,7 +157,7 @@ When LITERAL is non-nil, write without coding conversion."
                      '("alpha" "beta"))))))
 
 (ert-deftest tagaria-custom-syntax-round-trips-through-rename ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((tagaria-tag-regexp "\\[\\[tag:\\([^]]+\\)\\]\\]")
           (tagaria-format-function
            (lambda (name) (format "[[tag:%s]]" name))))
@@ -161,7 +169,7 @@ When LITERAL is non-nil, write without coding conversion."
                          "See [[tag:new name]].\n"))))))
 
 (ert-deftest tagaria-sync-keeps-zero-occurrence-tags ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((file (tagaria-test--write-file root "note.txt" "@{lasting}\n")))
       (tagaria-sync root)
       (delete-file file)
@@ -169,8 +177,10 @@ When LITERAL is non-nil, write without coding conversion."
       (should (assoc "lasting" (tagaria-tags root))))))
 
 (ert-deftest tagaria-occurrence-deletion-cleans-text-boundaries ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (dolist (case '(("  @{x}  \nnext\n" . "next\n")
+                    ("@{x} tail" . "tail")
+                    ("head @{x}" . "head")
                     ("a  @{x}  b" . "a b")
                     ("a @{x}b" . "a b")
                     ("a@{x}b" . "ab")
@@ -186,23 +196,33 @@ When LITERAL is non-nil, write without coding conversion."
         (should (equal (buffer-string) (cdr case)))))))
 
 (ert-deftest tagaria-bulk-deletion-can-preserve-or-remove-tag-data ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((file (tagaria-test--write-file
                  root "note.txt" "A @{keep} B\n@{drop}\n")))
       (tagaria-sync root)
-      (tagaria-set-description "keep" "retain" root)
-      (tagaria-set-description "drop" "remove" root)
+      (tagaria-set-desc "keep" "retain" root)
+      (tagaria-set-desc "drop" "remove" root)
       (tagaria-set-related "keep" "drop" t root)
       (tagaria-delete-occurrences "keep" root)
       (should (equal (tagaria-test--file-string file) "A B\n@{drop}\n"))
-      (should (equal (tagaria-description "keep" root) "retain"))
+      (should (equal (tagaria-desc "keep" root) "retain"))
       (tagaria-delete-tag "drop" root)
       (should (equal (tagaria-test--file-string file) "A B\n"))
       (should-not (assoc "drop" (tagaria-tags root)))
       (should-not (tagaria-related-tags "keep" root)))))
 
+(ert-deftest tagaria-deletes-multiple-occurrences-in-one-file ()
+  (tagaria-test-with-realm
+    (let ((file (tagaria-test--write-file
+                 root "note.txt" "one @{tag} two @{tag} three\n")))
+      (tagaria-sync root)
+      (should (= (plist-get (tagaria-delete-occurrences "tag" root) :count)
+                 2))
+      (should (equal (tagaria-test--file-string file)
+                     "one two three\n")))))
+
 (ert-deftest tagaria-scan-does-not-follow-symbolic-links ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((outside (make-temp-file "tagaria-outside-" t)))
       (unwind-protect
           (progn
@@ -214,7 +234,7 @@ When LITERAL is non-nil, write without coding conversion."
         (delete-directory outside t)))))
 
 (ert-deftest tagaria-insert-registers-a-new-empty-tag ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (with-temp-buffer
       (setq default-directory root)
       (cl-letf (((symbol-function 'completing-read)
@@ -224,7 +244,7 @@ When LITERAL is non-nil, write without coding conversion."
     (should (equal (assoc "new-tag" (tagaria-tags root)) '("new-tag")))))
 
 (ert-deftest tagaria-minor-mode-fontifies-and-makes-tags-clickable ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (with-temp-buffer
       (insert "See @{flow-matching} here.")
       (let ((unrelated-map (make-sparse-keymap)))
@@ -252,7 +272,7 @@ When LITERAL is non-nil, write without coding conversion."
                     unrelated-map))))))
 
 (ert-deftest tagaria-open-at-point-integrates-with-org ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let (opened)
       (cl-letf (((symbol-function 'tagaria-show-occurrences)
                  (lambda (&optional tag) (setq opened tag))))
@@ -273,7 +293,7 @@ When LITERAL is non-nil, write without coding conversion."
 
 (ert-deftest tagaria-open-at-point-integrates-with-markdown ()
   (skip-unless (require 'markdown-mode nil t))
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (with-temp-buffer
       (markdown-mode)
       (font-lock-mode 1)
@@ -287,37 +307,37 @@ When LITERAL is non-nil, write without coding conversion."
       (should (eq (key-binding (kbd "C-c C-o"))
                   #'markdown-follow-thing-at-point)))))
 
-(ert-deftest tagaria-description-buffer-editor-preserves-newlines ()
-  (tagaria-test-with-silo
+(ert-deftest tagaria-desc-buffer-editor-preserves-newlines ()
+  (tagaria-test-with-realm
     (tagaria-register "alpha" nil root)
     (let* ((scan (tagaria-sync root))
            (list-buffer (tagaria--prepare-list-buffer
                          root nil nil scan))
            (detail
-           (save-window-excursion
-             (tagaria--open-detail
-              root "alpha" scan list-buffer))))
+            (save-window-excursion
+              (tagaria--open-detail
+               root "alpha" scan list-buffer))))
       (save-window-excursion
         (switch-to-buffer detail)
-        (tagaria-edit-description-buffer "alpha")
+        (tagaria-edit-desc-buffer "alpha")
         (should (derived-mode-p 'text-mode))
         (should (listp header-line-format))
         (erase-buffer)
         (insert "First line\nSecond line")
-        (cl-letf (((symbol-function 'tagaria-set-description)
+        (cl-letf (((symbol-function 'tagaria-set-desc)
                    (lambda (&rest _arguments) (error "Injected write failure"))))
-          (should-error (tagaria-description-edit-commit))
+          (should-error (tagaria-desc-edit-commit))
           (should (buffer-live-p (current-buffer)))
           (should (equal (buffer-string) "First line\nSecond line")))
-        (tagaria-description-edit-commit))
-    (should (equal (tagaria-description "alpha" root)
-                   "First line\nSecond line"))
+        (tagaria-desc-edit-commit))
+      (should (equal (tagaria-desc "alpha" root)
+                     "First line\nSecond line"))
       (with-current-buffer detail
         (should (string-match-p "First line\nSecond line"
                                 (buffer-string)))))))
 
-(ert-deftest tagaria-create-prompts-for-silo-only-once ()
-  (tagaria-test-with-silo
+(ert-deftest tagaria-create-prompts-for-realm-only-once ()
+  (tagaria-test-with-realm
     (let ((tagaria-directory nil)
           (directory-prompts 0))
       (with-temp-buffer
@@ -331,30 +351,30 @@ When LITERAL is non-nil, write without coding conversion."
       (should (= directory-prompts 1))
       (should (assoc "created" (tagaria-tags root))))))
 
-(ert-deftest tagaria-discovers-enclosing-silo-when-default-is-unset ()
-  (tagaria-test-with-silo
+(ert-deftest tagaria-discovers-enclosing-realm-when-default-is-unset ()
+  (tagaria-test-with-realm
     (tagaria-register "known" nil root)
     (let ((tagaria-directory nil)
           (default-directory (expand-file-name "nested/deeper/" root)))
       (make-directory default-directory t)
       (should (file-equal-p (tagaria--root) root)))))
 
-(ert-deftest tagaria-programmatic-create-does-not-prompt-for-silo ()
+(ert-deftest tagaria-programmatic-create-does-not-prompt-for-realm ()
   (let ((tagaria-directory nil)
         (default-directory
-         (file-name-as-directory (make-temp-file "tagaria-no-silo-" t))))
+         (file-name-as-directory (make-temp-file "tagaria-no-realm-" t))))
     (unwind-protect
         (should-error (tagaria-create "orphan") :type 'user-error)
       (delete-directory default-directory t))))
 
 (ert-deftest tagaria-register-preserves-existing-description ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (tagaria-register "known" "keep" root)
     (tagaria-register "known" "replace" root)
-    (should (equal (tagaria-description "known" root) "keep"))))
+    (should (equal (tagaria-desc "known" root) "keep"))))
 
 (ert-deftest tagaria-unregister-only-removes-orphans ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (tagaria-test--write-file root "used.txt" "@{used}\n")
     (tagaria-register "orphan" "unused" root)
     (tagaria-sync root)
@@ -363,15 +383,15 @@ When LITERAL is non-nil, write without coding conversion."
     (should-not (assoc "orphan" (tagaria-tags root)))))
 
 (ert-deftest tagaria-rename-rewrites-files-description-and-relations ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((first (tagaria-test--write-file
                   root "one.org" "A @{old-name} and @{other}.\n"))
           (second (tagaria-test--write-file
                    root "nested/two.md" "@{old-name} twice @{old-name}\n")))
       (tagaria-sync root)
-      (tagaria-set-description "old-name" "shared" root)
+      (tagaria-set-desc "old-name" "shared" root)
       (tagaria-set-related "old-name" "other" t root)
-      (let* ((preview (tagaria-scan-silo root))
+      (let* ((preview (tagaria-scan-realm root))
              (occurrences
               (gethash "old-name" (tagaria-scan-occurrence-table preview)))
              (signature (tagaria--occurrence-signature occurrences))
@@ -391,17 +411,17 @@ When LITERAL is non-nil, write without coding conversion."
                              start (match-end 0)))
                      count)
                    2))
-        (should (equal (tagaria-description "new-name" root) "shared"))
+        (should (equal (tagaria-desc "new-name" root) "shared"))
         (should (equal (tagaria-related-tags "new-name" root) '("other")))
         (should (equal (tagaria-related-tags "other" root) '("new-name")))
         (should-not (assoc "old-name" (tagaria-tags root)))
         (should (assoc "other" (tagaria-tags root)))))))
 
 (ert-deftest tagaria-rename-refuses-stale-preview ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((file (tagaria-test--write-file root "note.txt" "@{old}\n")))
       (tagaria-sync root)
-      (let* ((scan (tagaria-scan-silo root))
+      (let* ((scan (tagaria-scan-realm root))
              (signature
               (tagaria--occurrence-signature
                (gethash "old" (tagaria-scan-occurrence-table scan)))))
@@ -412,7 +432,7 @@ When LITERAL is non-nil, write without coding conversion."
                          "prefix @{old}\n"))))))
 
 (ert-deftest tagaria-rename-refuses-modified-visiting-buffer ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let* ((file (tagaria-test--write-file root "note.txt" "@{old}\n"))
            (buffer (find-file-noselect file)))
       (tagaria-sync root)
@@ -424,7 +444,7 @@ When LITERAL is non-nil, write without coding conversion."
       (should (string= (tagaria-test--file-string file) "@{old}\n")))))
 
 (ert-deftest tagaria-interactive-rename-saves-after-y-or-n-confirmation ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let* ((file (tagaria-test--write-file root "note.txt" "@{old}\n"))
            (buffer (find-file-noselect file))
            (confirmations 0))
@@ -445,16 +465,16 @@ When LITERAL is non-nil, write without coding conversion."
                        "@{new}\n@{new}\n")))))
 
 (ert-deftest tagaria-rename-rolls-back-files-and-data-on-error ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((first (tagaria-test--write-file root "a.txt" "@{old}\n"))
           (second (tagaria-test--write-file root "b.txt" "@{old}\n")))
       (tagaria-sync root)
-      (tagaria-set-description "old" "keep" root)
+      (tagaria-set-desc "old" "keep" root)
       (tagaria-register "peer" nil root)
       (tagaria-set-related "old" "peer" t root)
-      (let ((original-rewrite (symbol-function 'tagaria--rewrite-file))
+      (let ((original-rewrite (symbol-function 'tagaria--modify-file))
             (calls 0))
-        (cl-letf (((symbol-function 'tagaria--rewrite-file)
+        (cl-letf (((symbol-function 'tagaria--modify-file)
                    (lambda (&rest arguments)
                      (setq calls (1+ calls))
                      (if (= calls 2)
@@ -463,16 +483,16 @@ When LITERAL is non-nil, write without coding conversion."
           (should-error (tagaria-rename-tag "old" "new" root))))
       (should (string= (tagaria-test--file-string first) "@{old}\n"))
       (should (string= (tagaria-test--file-string second) "@{old}\n"))
-      (should (equal (tagaria-description "old" root) "keep"))
+      (should (equal (tagaria-desc "old" root) "keep"))
       (should (equal (tagaria-related-tags "old" root) '("peer")))
       (should (equal (tagaria-related-tags "peer" root) '("old")))
       (should-not (assoc "new" (tagaria-tags root))))))
 
 (ert-deftest tagaria-rename-rollback-refreshes-visiting-database-buffer ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((file (tagaria-test--write-file root "note.txt" "@{old}\n")))
       (tagaria-sync root)
-      (tagaria-set-description "old" "keep" root)
+      (tagaria-set-desc "old" "keep" root)
       (let* ((database (expand-file-name ".tagaria.eld" root))
              (buffer (find-file-noselect database))
              (original-write (symbol-function 'tagaria--write-database)))
@@ -487,7 +507,7 @@ When LITERAL is non-nil, write without coding conversion."
           (should-not (string-match-p "\"new\"" (buffer-string))))))))
 
 (ert-deftest tagaria-successful-renames-prune-old-backups ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let ((tagaria-backup-keep 2))
       (tagaria-test--write-file root "note.txt" "@{one}\n")
       (tagaria-sync root)
@@ -501,136 +521,117 @@ When LITERAL is non-nil, write without coding conversion."
                  2)))))
 
 (ert-deftest tagaria-list-and-detail-share-one-window ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (tagaria-test--write-file root "note.txt" "@{alpha}\n@{alpha}\n@{beta}\n")
     (let ((scan (tagaria-sync root)))
-      (tagaria-set-description "alpha" "Example\ncontinued" root)
-      (tagaria-set-description "beta" "" root)
-      (should-not (tagaria-description "beta" root))
+      (tagaria-set-desc "alpha" "Example\ncontinued" root)
+      (tagaria-set-desc "beta" "" root)
+      (should-not (tagaria-desc "beta" root))
       (setq scan (tagaria-sync root))
       (let ((list-buffer (tagaria--prepare-list-buffer
                           root nil nil scan)))
-      (unwind-protect
-          (save-window-excursion
-            (delete-other-windows)
-            (switch-to-buffer list-buffer)
-            ;; A data-only refresh must update the scan reused by Detail.
-            (tagaria-set-related "alpha" "beta" t root)
-            (tagaria--refresh-list-buffers root)
-            (setq scan tagaria--scan)
-            (should (= (length tabulated-list-entries) 2))
-            (should (equal (aref (cadar tabulated-list-entries) 2) "2"))
-            (should (string-match-p
-                     "Example.*↵.*continued"
-                     (aref (cadar tabulated-list-entries) 1)))
-            (should (equal
-                     (aref (cadr (cadr tabulated-list-entries)) 1)
-                     "(empty)"))
-            (should
-             (eq (lookup-key
-                  (get-text-property
-                   0 'keymap (aref (cadar tabulated-list-entries) 0))
-                  [mouse-1])
-                 #'tagaria-mouse-show-occurrences))
-            (should
-             (eq (lookup-key
-                  (get-text-property
-                   0 'keymap (aref (cadar tabulated-list-entries) 3))
-                  [mouse-1])
-                 #'tagaria-mouse-show-related))
-            (should
-             (eq (lookup-key
-                  (get-text-property
-                   0 'keymap (aref (cadar tabulated-list-entries) 1))
-                  [mouse-1])
-                 #'tagaria-mouse-edit-description))
-            (let ((tagaria-window (selected-window)))
-              (let (edited)
-                (cl-letf (((symbol-function 'tagaria-edit-description)
-                           (lambda (tag) (setq edited tag))))
-                  (goto-char (point-min))
-                  (re-search-forward "Example")
-                  (tagaria-list-activate))
-                (should (equal edited "alpha")))
-              (goto-char (point-min))
-              (re-search-forward "beta")
-              (should (equal
-                       (tagaria--text-property-at-point
-                        'tagaria-related-tag)
-                       "beta"))
-              (tagaria-list-activate)
-              (should (eq (selected-window) tagaria-window))
-              (should (derived-mode-p 'tagaria-detail-mode))
-              (should (equal tagaria--detail-tag "beta"))
-              (tagaria-detail-up)
-              (tagaria--goto-tag-row "alpha")
-              (tagaria--open-detail
-               root "alpha" scan list-buffer)
-              (should (eq (selected-window) tagaria-window))
-              (should (derived-mode-p 'tagaria-detail-mode))
-              (should (eq (get-text-property
-                           (line-beginning-position) 'tagaria-section)
-                          'occurrences))
-              (should (eq (key-binding (kbd "TAB"))
-                          #'tagaria-detail-toggle-section))
-              (should (string-match-p "Example" (buffer-string)))
-              (let (edited)
-                (cl-letf (((symbol-function 'tagaria-edit-description)
-                           (lambda (tag) (setq edited tag))))
-                  (goto-char (point-min))
-                  (re-search-forward "Example")
-                  (tagaria-detail-activate))
-                (should (equal edited "alpha")))
-              (goto-char (point-min))
-              (re-search-forward "beta")
-              (tagaria-show-related-at-point)
-              (should (equal tagaria--detail-tag "beta"))
-              (should (derived-mode-p 'tagaria-detail-mode))
-              (goto-char (point-min))
-              (re-search-forward "alpha")
-              (tagaria-show-related-at-point)
-              (should (equal tagaria--detail-tag "alpha"))
-              (save-excursion
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
+              (switch-to-buffer list-buffer)
+              ;; A data-only refresh must update the scan reused by Detail.
+              (tagaria-set-related "alpha" "beta" t root)
+              (tagaria--refresh-list-buffers root)
+              (setq scan tagaria--scan)
+              (should (= (length tabulated-list-entries) 2))
+              (let ((tagaria-window (selected-window)))
+                (let (edited)
+                  (cl-letf (((symbol-function 'tagaria-edit-desc)
+                             (lambda (tag) (setq edited tag))))
+                    (goto-char (point-min))
+                    (re-search-forward "Example")
+                    (tagaria-list-activate))
+                  (should (equal edited "alpha")))
                 (goto-char (point-min))
-                (re-search-forward "Description$")
-                (beginning-of-line)
-                (tagaria-detail-toggle-section))
-              (with-current-buffer
-                  (find-file-noselect (expand-file-name "note.txt" root))
-                (erase-buffer)
-                (insert "@{alpha}\n@{alpha}\n@{alpha}\n")
-                (save-buffer))
-            (tagaria-detail-refresh)
-            (should (string-match-p "Occurrences (3)" (buffer-string)))
-            (save-excursion
-              (goto-char (point-min))
-              (re-search-forward "Occurrences (\\([0-9]+\\))")
-              (should (eq (get-text-property (match-beginning 1) 'face)
-                          'default)))
-            (save-excursion
-              (goto-char (point-min))
-              (re-search-forward "Description$")
-              (forward-line 1)
-                (should (outline-invisible-p (point))))
-              (tagaria-detail-up)
-              (should (eq (selected-window) tagaria-window))
-              (should (eq (current-buffer) list-buffer))
-              (should (equal (tabulated-list-get-id) "alpha"))
-              (let ((detail (tagaria--open-detail
-                             root "alpha" scan list-buffer)))
-                (tagaria-quit)
-                (should-not (get-buffer-window detail)))))
+                (re-search-forward "beta")
+                (should (equal
+                         (tagaria--text-property-at-point
+                          'tagaria-related-tag)
+                         "beta"))
+                (tagaria-list-activate)
+                (should (eq (selected-window) tagaria-window))
+                (should (derived-mode-p 'tagaria-detail-mode))
+                (should (equal tagaria--detail-tag "beta"))
+                (tagaria-detail-up)
+                (tagaria--goto-tag-row "alpha")
+                (tagaria--open-detail
+                 root "alpha" scan list-buffer)
+                (should (eq (selected-window) tagaria-window))
+                (should (derived-mode-p 'tagaria-detail-mode))
+                (should (eq (get-text-property
+                             (line-beginning-position) 'tagaria-section)
+                            'occurrences))
+                (should (eq (key-binding (kbd "TAB"))
+                            #'tagaria-detail-toggle-section))
+                (should (string-match-p "Example" (buffer-string)))
+                (let (edited)
+                  (cl-letf (((symbol-function 'tagaria-edit-desc)
+                             (lambda (tag) (setq edited tag))))
+                    (goto-char (point-min))
+                    (re-search-forward "Example")
+                    (tagaria-detail-activate))
+                  (should (equal edited "alpha")))
+                (goto-char (point-min))
+                (re-search-forward "beta")
+                (tagaria-show-related-at-point)
+                (should (equal tagaria--detail-tag "beta"))
+                (should (derived-mode-p 'tagaria-detail-mode))
+                (goto-char (point-min))
+                (re-search-forward "alpha")
+                (tagaria-show-related-at-point)
+                (should (equal tagaria--detail-tag "alpha"))
+                (save-excursion
+                  (goto-char (point-min))
+                  (re-search-forward "Description$")
+                  (beginning-of-line)
+                  (tagaria-detail-toggle-section))
+                (with-current-buffer
+                    (find-file-noselect (expand-file-name "note.txt" root))
+                  (erase-buffer)
+                  (insert "@{alpha}\n@{alpha}\n@{alpha}\n")
+                  (save-buffer))
+                (tagaria-detail-refresh)
+                (should (string-match-p "Occurrences (3)" (buffer-string)))
+                (save-excursion
+                  (goto-char (point-min))
+                  (re-search-forward "Occurrences (\\([0-9]+\\))")
+                  (should (eq (get-text-property (match-beginning 1) 'face)
+                              'default)))
+                (save-excursion
+                  (goto-char (point-min))
+                  (re-search-forward "Description$")
+                  (forward-line 1)
+                  (should (outline-invisible-p (point))))
+                (tagaria-detail-up)
+                (should (eq (selected-window) tagaria-window))
+                (should (eq (current-buffer) list-buffer))
+                (should (equal (tabulated-list-get-id) "alpha"))
+                (let ((detail (tagaria--open-detail
+                               root "alpha" scan list-buffer)))
+                  (tagaria-quit)
+                  (should-not (get-buffer-window detail)))
+                (switch-to-buffer list-buffer)
+                (tagaria--goto-tag-row "beta")
+                (cl-letf (((symbol-function 'yes-or-no-p)
+                           (lambda (&rest _arguments) t)))
+                  (tagaria-delete))
+                (should (equal (tabulated-list-get-id) "alpha"))))
           (when (buffer-live-p list-buffer) (kill-buffer list-buffer)))))))
 
 (ert-deftest tagaria-detail-focuses-folds-and-previews-in-other-window ()
-  (tagaria-test-with-silo
-    (let* ((first (tagaria-test--write-file root "a.txt" "@{shared}\n"))
+  (tagaria-test-with-realm
+    (let* ((_first (tagaria-test--write-file root "a.txt" "@{shared}\n"))
            (second (tagaria-test--write-file root "b.txt" "@{shared}\n"))
            (scan (tagaria-sync root))
            (list-buffer (tagaria--prepare-list-buffer
                          root nil nil scan))
            (origin (generate-new-buffer " *tagaria-origin-test*")))
-      (tagaria-set-description "shared" "Common topic" root)
+      (tagaria-set-desc "shared" "Common topic" root)
       (setq scan (tagaria-sync root))
       (unwind-protect
           (save-window-excursion
@@ -639,48 +640,48 @@ When LITERAL is non-nil, write without coding conversion."
             (let ((origin-window (selected-window)))
               (let ((detail (tagaria--open-detail
                              root "shared" scan list-buffer)))
-              (should (derived-mode-p 'tagaria-detail-mode))
-              (should (string-match-p "Common topic" (buffer-string)))
-              (should-not (eq (selected-window) origin-window))
-              (should (eq (get-text-property
-                           (line-beginning-position) 'tagaria-section)
-                          'occurrences))
-              (tagaria-detail-next-line 1)
-              (should (tagaria--occurrence-at-point))
-              (save-excursion
-                (goto-char (point-min))
-                (re-search-forward "Description$")
-                (beginning-of-line)
-                (tagaria-detail-toggle-section)
+                (should (derived-mode-p 'tagaria-detail-mode))
+                (should (string-match-p "Common topic" (buffer-string)))
+                (should-not (eq (selected-window) origin-window))
+                (should (eq (get-text-property
+                             (line-beginning-position) 'tagaria-section)
+                            'occurrences))
+                (tagaria-detail-next-line 1)
+                (should (tagaria--occurrence-at-point))
+                (save-excursion
+                  (goto-char (point-min))
+                  (re-search-forward "Description$")
+                  (beginning-of-line)
+                  (tagaria-detail-toggle-section)
+                  (forward-line 1)
+                  (should (outline-invisible-p (point)))
+                  (tagaria-detail-toggle-section))
                 (forward-line 1)
-                (should (outline-invisible-p (point)))
-                (tagaria-detail-toggle-section))
-              (forward-line 1)
-              (tagaria--preview-current-occurrence)
-              (should (derived-mode-p 'tagaria-detail-mode))
-              (should (eq (selected-window)
-                          (get-buffer-window (current-buffer))))
-              (should (file-equal-p
-                       (buffer-file-name (window-buffer origin-window))
-                       second))
-              (should (overlayp tagaria--occurrence-preview-overlay))
-              (let ((detail-window (selected-window)))
-                (tagaria-visit-occurrence)
-                (should (eq (selected-window) origin-window))
-                (should (file-equal-p buffer-file-name second))
-                (should (eq (window-buffer detail-window) detail))
-                (select-window detail-window)
-                (tagaria-detail-up)
-                (should (eq (window-buffer detail-window) list-buffer)))
-              (should (buffer-live-p detail)))))
+                (tagaria--preview-current-occurrence)
+                (should (derived-mode-p 'tagaria-detail-mode))
+                (should (eq (selected-window)
+                            (get-buffer-window (current-buffer))))
+                (should (file-equal-p
+                         (buffer-file-name (window-buffer origin-window))
+                         second))
+                (should (overlayp tagaria--occurrence-preview-overlay))
+                (let ((detail-window (selected-window)))
+                  (tagaria-visit-occurrence)
+                  (should (eq (selected-window) origin-window))
+                  (should (file-equal-p buffer-file-name second))
+                  (should (eq (window-buffer detail-window) detail))
+                  (select-window detail-window)
+                  (tagaria-detail-up)
+                  (should (eq (window-buffer detail-window) list-buffer)))
+                (should (buffer-live-p detail)))))
         (when (buffer-live-p origin) (kill-buffer origin))
         (when (buffer-live-p list-buffer) (kill-buffer list-buffer))))))
 
 (ert-deftest tagaria-occurrence-position-widens-visiting-buffer ()
-  (tagaria-test-with-silo
+  (tagaria-test-with-realm
     (let* ((file (tagaria-test--write-file
                   root "note.txt" "@{first}\nsecond\n"))
-           (scan (tagaria-scan-silo root))
+           (scan (tagaria-scan-realm root))
            (occurrence
             (car (gethash "first" (tagaria-scan-occurrence-table scan))))
            (buffer (find-file-noselect file)))
@@ -692,8 +693,8 @@ When LITERAL is non-nil, write without coding conversion."
         (should-not (buffer-narrowed-p))
         (should (= (line-number-at-pos) 1))))))
 
-(ert-deftest tagaria-list-buffers-are-scoped-by-silo ()
-  (tagaria-test-with-silo
+(ert-deftest tagaria-list-buffers-are-scoped-by-realm ()
+  (tagaria-test-with-realm
     (let ((other-root
            (file-name-as-directory (make-temp-file "tagaria-other-" t))))
       (unwind-protect
@@ -703,9 +704,9 @@ When LITERAL is non-nil, write without coding conversion."
               (should-not (eq first second))
               (should-not (equal (buffer-name first) (buffer-name second)))
               (should (file-equal-p
-                       (buffer-local-value 'tagaria--silo-root first) root))
+                       (buffer-local-value 'tagaria--buffer-root first) root))
               (should (file-equal-p
-                       (buffer-local-value 'tagaria--silo-root second)
+                       (buffer-local-value 'tagaria--buffer-root second)
                        other-root))
               (kill-buffer first)
               (kill-buffer second)))

@@ -28,13 +28,13 @@
 (require 'subr-x)
 
 (defgroup tagaria nil
-  "Manage textual tags inside directory silos."
+  "Manage textual tags inside directory-backed realms."
   :group 'convenience
   :prefix "tagaria-")
 
 (defcustom tagaria-directory nil
-  "Directory used as the default Tagaria silo.
-When nil, Tagaria first looks for an enclosing silo, then prompts when needed."
+  "Directory used as the default Tagaria realm.
+When nil, Tagaria first looks for an enclosing realm, then prompts when needed."
   :type '(choice (const :tag "Prompt when needed" nil)
                  directory)
   :group 'tagaria)
@@ -55,7 +55,7 @@ The result must match `tagaria-tag-regexp', with NAME in capture group one."
   :group 'tagaria)
 
 (defcustom tagaria-database-file-name ".tagaria.eld"
-  "File name used for Tagaria data inside each silo."
+  "File name used for Tagaria data inside each realm."
   :type 'string
   :group 'tagaria)
 
@@ -65,7 +65,7 @@ The result must match `tagaria-tag-regexp', with NAME in capture group one."
   :group 'tagaria)
 
 (defcustom tagaria-backup-keep 10
-  "Number of successful rename backups to retain per silo.
+  "Number of successful rename backups to retain per realm.
 Values below one are treated as one so the most recent rename stays
 recoverable.  Nil keeps every backup."
   :type '(choice integer (const :tag "Keep every backup" nil))
@@ -109,11 +109,21 @@ tag and returns a string, normally either an empty string or one space."
   tag file start end line column context)
 
 (cl-defstruct (tagaria-scan (:constructor tagaria-scan-create))
-  "Results from scanning one Tagaria silo."
+  "Results from scanning one Tagaria realm."
   root occurrence-table fingerprints entries relations)
 
-(defun tagaria--find-enclosing-silo ()
-  "Return the nearest Tagaria silo containing the current buffer, or nil."
+(cl-defstruct (tagaria--migration-entry
+               (:constructor tagaria--migration-entry-create))
+  "One converted legacy tag entry and its migration notes."
+  entry related dropped)
+
+(cl-defstruct (tagaria--migration-plan
+               (:constructor tagaria--migration-plan-create))
+  "A validated database migration ready to be written."
+  database tag-count dropped)
+
+(defun tagaria--find-enclosing-realm ()
+  "Return the nearest Tagaria realm containing the current buffer, or nil."
   (let* ((location (or buffer-file-name default-directory))
          (directory (if (file-directory-p location)
                         location
@@ -121,9 +131,9 @@ tag and returns a string, normally either an empty string or one space."
     (locate-dominating-file directory tagaria-database-file-name)))
 
 (defun tagaria--root (&optional directory)
-  "Return canonical silo root for DIRECTORY or `tagaria-directory'."
+  "Return canonical realm root for DIRECTORY or `tagaria-directory'."
   (let ((candidate (or directory tagaria-directory
-                       (tagaria--find-enclosing-silo))))
+                       (tagaria--find-enclosing-realm))))
     (unless candidate
       (user-error "No Tagaria directory is configured"))
     (unless (file-directory-p candidate)
@@ -150,52 +160,67 @@ tag and returns a string, normally either an empty string or one space."
   "Return a new empty Tagaria database value."
   (list :tags nil :related nil))
 
-(defun tagaria--description-data-p (data)
-  "Return non-nil when DATA contains only an optional string description."
+(defun tagaria--desc-data-p (data)
+  "Return non-nil when DATA contain only an optional string description."
   (or (null data)
       (and (equal (proper-list-p data) 2)
            (eq (car data) :desc)
            (stringp (cadr data)))))
 
+(defun tagaria--canonical-edge (first second)
+  "Return the undirected FIRST/SECOND edge in canonical order."
+  (if (string-lessp first second)
+      (list first second)
+    (list second first)))
+
+(defun tagaria--edge-less-p (left right)
+  "Return non-nil when edge LEFT sorts before edge RIGHT."
+  (or (string-lessp (car left) (car right))
+      (and (string= (car left) (car right))
+           (string-lessp (cadr left) (cadr right)))))
+
 (defun tagaria--validate-related (related tags path)
-  "Validate RELATED against TAGS read from PATH and return a sorted copy."
+  "Validate RELATED edges against TAGS read from PATH and return them sorted."
   (unless (proper-list-p related)
     (error "Tagaria :related must be a proper list in %s" path))
   (let ((known (make-hash-table :test #'equal))
-        (adjacency (make-hash-table :test #'equal)))
+        (seen (make-hash-table :test #'equal))
+        edges)
     (dolist (entry tags)
       (puthash (car entry) t known))
-    (dolist (entry related)
-      (unless (and (proper-list-p entry) (stringp (car entry))
-                   (gethash (car entry) known))
-        (error "Malformed Tagaria related-tags mapping in %s: %S" path entry))
-      (when (gethash (car entry) adjacency)
-        (error "Duplicate Tagaria related-tags entry in %s: %s"
-               path (car entry)))
-      (let ((neighbors (make-hash-table :test #'equal)))
-        (dolist (other (cdr entry))
-          (unless (and (stringp other)
-                       (gethash other known)
-                       (not (string= other (car entry)))
-                       (not (gethash other neighbors)))
-            (error "Malformed Tagaria related-tags mapping in %s: %S"
-                   path entry))
-          (puthash other t neighbors))
-        (puthash (car entry) neighbors adjacency)))
-    (maphash
-     (lambda (name neighbors)
-       (maphash
-        (lambda (other _present)
-          (unless (let ((reverse (gethash other adjacency)))
-                    (and reverse (gethash name reverse)))
-            (error "Asymmetric Tagaria relation in %s: %s and %s"
-                   path name other)))
-        neighbors))
-     adjacency)
-    (mapcar (lambda (entry)
-              (cons (car entry) (sort (copy-sequence (cdr entry))
-                                      #'string-lessp)))
-            (seq-sort-by #'car #'string-lessp related))))
+    (dolist (relation related)
+      (unless (and (equal (proper-list-p relation) 2)
+                   (stringp (car relation))
+                   (stringp (cadr relation))
+                   (gethash (car relation) known)
+                   (gethash (cadr relation) known)
+                   (not (string= (car relation) (cadr relation))))
+        (error "Malformed Tagaria relation in %s: %S" path relation))
+      (let ((edge (tagaria--canonical-edge (car relation) (cadr relation))))
+        (when (gethash edge seen)
+          (error "Duplicate Tagaria relation in %s: %S" path edge))
+        (puthash edge t seen)
+        (push edge edges)))
+    (sort edges #'tagaria--edge-less-p)))
+
+(defun tagaria--related-tags-in (name relations)
+  "Return tags related to NAME in undirected RELATIONS."
+  (sort
+   (cl-loop for (first second) in relations
+            if (string= name first) collect second
+            else if (string= name second) collect first)
+   #'string-lessp))
+
+(defun tagaria--relation-index (relations)
+  "Return a neighbor index derived from undirected RELATIONS."
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (edge relations)
+      (push (cadr edge) (gethash (car edge) table))
+      (push (car edge) (gethash (cadr edge) table)))
+    (maphash (lambda (name neighbors)
+               (puthash name (sort neighbors #'string-lessp) table))
+             table)
+    table))
 
 (defun tagaria--validate-database (database path)
   "Validate DATABASE read from PATH and return it.
@@ -212,7 +237,7 @@ Signal an error without modifying PATH when the value is malformed."
                    (stringp (car entry))
                    (not (string-empty-p (car entry))))
         (error "Malformed Tagaria entry in %s: %S" path entry))
-      (unless (tagaria--description-data-p (cdr entry))
+      (unless (tagaria--desc-data-p (cdr entry))
         (error (concat "Tagaria entries may contain only a string :desc in "
                        "%s: %S.  Run M-x tagaria-migrate-database")
                path (cdr entry)))
@@ -290,6 +315,17 @@ Return nil for an empty buffer when ALLOW-EMPTY is non-nil."
   "Return a copy of ENTRIES sorted by tag name."
   (seq-sort-by #'car #'string-lessp entries))
 
+(defun tagaria--count-phrase (count singular &optional plural)
+  "Return COUNT followed by SINGULAR or its optional PLURAL form."
+  (format "%d %s" count
+          (if (= count 1) singular (or plural (concat singular "s")))))
+
+(defun tagaria--normalize-desc (description)
+  "Return DESCRIPTION as a string or nil, treating an empty string as nil."
+  (unless (or (null description) (stringp description))
+    (error "Tagaria description must be a string or nil: %S" description))
+  (and description (not (string-empty-p description)) description))
+
 (defun tagaria--entry (database name)
   "Return NAME's entry in DATABASE, or nil."
   (assoc name (plist-get database :tags)))
@@ -298,10 +334,7 @@ Return nil for an empty buffer when ALLOW-EMPTY is non-nil."
   "Set NAME to optional string DESCRIPTION in DATABASE and return DATABASE."
   (unless (and (stringp name) (not (string-empty-p name)))
     (error "Invalid Tagaria tag name: %S" name))
-  (unless (or (null description) (stringp description))
-    (error "Tagaria description must be a string or nil: %S" description))
-  (when (and description (string-empty-p description))
-    (setq description nil))
+  (setq description (tagaria--normalize-desc description))
   (let* ((tags (plist-get database :tags))
          (entry (assoc name tags)))
     (if entry
@@ -317,29 +350,24 @@ Return nil for an empty buffer when ALLOW-EMPTY is non-nil."
                                (plist-get database :tags))))
   (plist-put
    database :related
-   (cl-loop for entry in (plist-get database :related)
-            unless (string= (car entry) name)
-            for others = (delete name (copy-sequence (cdr entry)))
-            when others collect (cons (car entry) others))))
+   (seq-remove (lambda (edge) (member name edge))
+               (plist-get database :related))))
 
 (defun tagaria-tags (&optional directory)
-  "Return all tag entries for DIRECTORY's silo."
+  "Return all tag entries for DIRECTORY's realm."
   (copy-tree
    (plist-get (tagaria--read-database (tagaria--root directory)) :tags)))
 
-(defun tagaria-description (name &optional directory)
+(defun tagaria-desc (name &optional directory)
   "Return NAME's description in DIRECTORY, or nil."
   (when-let ((entry (tagaria--entry
                      (tagaria--read-database (tagaria--root directory)) name)))
     (plist-get (cdr entry) :desc)))
 
-(defun tagaria-set-description (name description &optional directory)
+(defun tagaria-set-desc (name description &optional directory)
   "Set NAME's optional string DESCRIPTION in DIRECTORY and return it."
-  (unless (or (null description) (stringp description))
-    (error "Tagaria description must be a string or nil: %S" description))
-  (when (and description (string-empty-p description))
-    (setq description nil))
-  (let* ((root (tagaria--root directory))
+  (let* ((description (tagaria--normalize-desc description))
+         (root (tagaria--root directory))
          (database (tagaria--read-database root)))
     (unless (tagaria--entry database name)
       (user-error "Unknown Tagaria tag: %s" name))
@@ -360,47 +388,30 @@ An existing description is preserved.  Return NAME."
     name))
 
 (defun tagaria-related-tags (name &optional directory)
-  "Return the tags related to NAME in DIRECTORY."
-  (copy-sequence
-   (cdr (assoc name (plist-get
-                     (tagaria--read-database (tagaria--root directory))
-                     :related)))))
-
-(defun tagaria-relations (&optional directory)
-  "Return a copy of the symmetric related-tags mapping in DIRECTORY."
-  (copy-tree
-   (plist-get (tagaria--read-database (tagaria--root directory)) :related)))
+  "Return tags related to NAME in the realm at optional DIRECTORY."
+  (tagaria--related-tags-in
+   name (plist-get (tagaria--read-database (tagaria--root directory))
+                   :related)))
 
 (defun tagaria--set-related-pair (database first second present)
-  "Set the symmetric FIRST/SECOND relation in DATABASE to PRESENT."
-  (let ((related (copy-tree (plist-get database :related))))
-    (dolist (pair `((,first . ,second) (,second . ,first)))
-      (let* ((name (car pair))
-             (other (cdr pair))
-             (entry (assoc name related))
-             (values (delete other (copy-sequence (cdr entry)))))
-        (when present (push other values))
-        (if values
-            (if entry
-                (setcdr entry (sort values #'string-lessp))
-              (push (cons name values) related))
-          (setq related (assoc-delete-all name related)))))
+  "Set the undirected FIRST/SECOND relation in DATABASE to PRESENT."
+  (let* ((edge (tagaria--canonical-edge first second))
+         (relations (delete edge (copy-tree (plist-get database :related)))))
     (plist-put database :related
-               (seq-sort-by #'car #'string-lessp related))))
+               (sort (if present (cons edge relations) relations)
+                     #'tagaria--edge-less-p))))
 
 (defun tagaria-set-related (first second present &optional directory)
-  "Set the symmetric relation between FIRST and SECOND to PRESENT."
+  "Set the undirected relation between FIRST and SECOND to PRESENT."
   (when (string= first second)
     (user-error "A Tagaria tag cannot be related to itself"))
   (let* ((root (tagaria--root directory))
-         (database (tagaria--read-database root)))
+         (database (tagaria--read-database root))
+         (edge (tagaria--canonical-edge first second)))
     (dolist (name (list first second))
       (unless (tagaria--entry database name)
         (user-error "Unknown Tagaria tag: %s" name)))
-    (unless (eq (and (member second
-                             (cdr (assoc first
-                                         (plist-get database :related))))
-                     t)
+    (unless (eq (and (member edge (plist-get database :related)) t)
                 (and present t))
       (tagaria--write-database
        root (tagaria--set-related-pair database first second present)))
@@ -410,13 +421,13 @@ An existing description is preserved.  Return NAME."
   "Remove NAME from DIRECTORY's database when it has no references.
 Signal a `user-error' when NAME still has textual occurrences."
   (let* ((root (tagaria--root directory))
-         (scan (tagaria-scan-silo root))
+         (scan (tagaria-scan-realm root))
          (occurrences (gethash name (tagaria-scan-occurrence-table scan)))
          (database (tagaria--read-database root)))
     (when occurrences
-      (user-error "Cannot remove %s; it still has %d occurrence%s"
-                  name (length occurrences)
-                  (if (= (length occurrences) 1) "" "s")))
+      (user-error "Cannot remove %s; it still has %s"
+                  name (tagaria--count-phrase
+                        (length occurrences) "occurrence")))
     (unless (tagaria--entry database name)
       (user-error "Unknown Tagaria tag: %s" name))
     (tagaria--write-database root (tagaria--delete-entry database name))
@@ -478,6 +489,19 @@ Signal a `user-error' when NAME still has textual occurrences."
     (list (file-attribute-size attributes)
           (file-attribute-modification-time attributes))))
 
+(defun tagaria--occurrence-context (start)
+  "Return a bounded context excerpt around START on its current line."
+  (let* ((line-start (line-beginning-position))
+         (line-end (line-end-position))
+         (half (/ tagaria-context-width 2))
+         (excerpt-start (max line-start (- start half)))
+         (excerpt-end
+          (min line-end (+ excerpt-start tagaria-context-width))))
+    (setq excerpt-start
+          (max line-start (- excerpt-end tagaria-context-width)))
+    (string-trim
+     (buffer-substring-no-properties excerpt-start excerpt-end))))
+
 (defun tagaria--scan-current-buffer (file occurrence-table)
   "Scan the current buffer as FILE into OCCURRENCE-TABLE."
   (save-excursion
@@ -509,20 +533,7 @@ Signal a `user-error' when NAME still has textual occurrences."
                   :column (save-excursion
                             (goto-char start)
                             (current-column))
-                  :context
-                  (let* ((line-start (line-beginning-position))
-                         (line-end (line-end-position))
-                         (half (/ tagaria-context-width 2))
-                         (excerpt-start (max line-start (- start half)))
-                         (excerpt-end
-                          (min line-end (+ excerpt-start
-                                           tagaria-context-width))))
-                    (setq excerpt-start
-                          (max line-start (- excerpt-end
-                                             tagaria-context-width)))
-                    (string-trim
-                     (buffer-substring-no-properties
-                      excerpt-start excerpt-end))))))
+                  :context (tagaria--occurrence-context start))))
             (puthash name
                      (cons occurrence (gethash name occurrence-table))
                      occurrence-table)))))))
@@ -538,7 +549,7 @@ Signal a `user-error' when NAME still has textual occurrences."
       (insert-file-contents file)
       (tagaria--scan-current-buffer file occurrence-table))))
 
-(defun tagaria-scan-silo (&optional directory)
+(defun tagaria-scan-realm (&optional directory)
   "Scan DIRECTORY and return a `tagaria-scan' value.
 This function does not mutate the Tagaria database."
   (tagaria--check-tag-regexp)
@@ -560,7 +571,7 @@ This function does not mutate the Tagaria database."
 (defun tagaria-sync (&optional directory)
   "Scan DIRECTORY, register newly discovered tags, and return the scan."
   (let* ((root (tagaria--root directory))
-         (scan (tagaria-scan-silo root))
+         (scan (tagaria-scan-realm root))
          (database (tagaria--read-database root))
          (known (make-hash-table :test #'equal))
          new-entries)
@@ -584,7 +595,10 @@ This function does not mutate the Tagaria database."
 (defun tagaria--update-scan-data (scan database)
   "Update SCAN with the tag data in freshly read DATABASE and return SCAN."
   (setf (tagaria-scan-entries scan) (plist-get database :tags)
-        (tagaria-scan-relations scan) (plist-get database :related))
+        ;; The file stores each undirected edge once.  Views use an adjacency
+        ;; index because they repeatedly ask for one tag's neighbours.
+        (tagaria-scan-relations scan)
+        (tagaria--relation-index (plist-get database :related)))
   scan)
 
 (defun tagaria--format-tag (name)
@@ -659,6 +673,10 @@ and characters from the same script receive no separator."
           (delete-region left-space-start right-space-end)
           (goto-char left-space-start)
           (insert " "))
+         ((and (= start line-start) (> right-space-end end))
+          (delete-region start right-space-end))
+         ((and (= end line-end) (< left-space-start start))
+          (delete-region left-space-start end))
          ((or (< left-space-start start) (> right-space-end end))
           (delete-region start end))
          (t
@@ -730,18 +748,133 @@ and characters from the same script receive no separator."
     (mapconcat #'tagaria--legacy-value-string value ", "))
    (t (format "%s" value))))
 
-(defun tagaria--migrate-legacy-description (data path)
-  "Extract an optional string description from legacy DATA read at PATH."
-  (let ((length (proper-list-p data)))
+(defun tagaria--migrate-legacy-entry (entry path)
+  "Return migration data for legacy ENTRY read at PATH."
+  (unless (and (consp entry)
+               (stringp (car entry))
+               (not (string-empty-p (car entry))))
+    (error "Malformed legacy Tagaria entry in %s: %S" path entry))
+  (let* ((data (cdr entry))
+         (length (proper-list-p data)))
     (unless (and length (cl-evenp length))
       (error "Malformed legacy Tagaria entry data in %s: %S" path data))
-    (cl-loop for (key _value) on data by #'cddr
-             unless (keywordp key)
-             do (error "Legacy Tagaria field is not a keyword in %s: %S"
-                       path key)
-             finally return
-             (when (plist-member data :desc)
-               (tagaria--legacy-value-string (plist-get data :desc))))))
+    (let* ((keys (cl-loop for (key _value) on data by #'cddr
+                          unless (keywordp key)
+                          do (error
+                              "Legacy Tagaria field is not a keyword in %s: %S"
+                              path key)
+                          collect key))
+           (description
+            (and (plist-member data :desc)
+                 (tagaria--legacy-value-string (plist-get data :desc))))
+           (related-value (and (plist-member data :related)
+                               (plist-get data :related)))
+           (related (and (proper-list-p related-value)
+                         (seq-filter #'stringp related-value)))
+           (invalid-related
+            (and (plist-member data :related)
+                 (or (not (proper-list-p related-value))
+                     (seq-some (lambda (value) (not (stringp value)))
+                               related-value))))
+           (dropped (seq-remove (lambda (key) (memq key '(:desc :related)))
+                                keys)))
+      (tagaria--migration-entry-create
+       :entry (cons (car entry)
+                    (and description
+                         (not (string-empty-p description))
+                         (list :desc description)))
+       :related related
+       :dropped (if invalid-related (cons :related dropped) dropped)))))
+
+(defun tagaria--migration-edges (migration)
+  "Return all per-entry relation edges described by MIGRATION."
+  (cl-loop for item in migration
+           for name = (car (tagaria--migration-entry-entry item))
+           append (mapcar (lambda (other)
+                            (tagaria--canonical-edge name other))
+                          (tagaria--migration-entry-related item))))
+
+(defun tagaria--legacy-top-level-edges (related path)
+  "Convert legacy top-level RELATED adjacency data read at PATH to edges."
+  (unless (proper-list-p related)
+    (error "Legacy Tagaria :related must be a proper list in %s" path))
+  (cl-loop
+   for entry in related
+   unless (and (consp entry)
+               (stringp (car entry))
+               (proper-list-p (cdr entry)))
+   do (error "Malformed legacy Tagaria relation in %s: %S" path entry)
+   append
+   (mapcar
+    (lambda (other)
+      (unless (stringp other)
+        (error "Malformed legacy Tagaria relation in %s: %S" path entry))
+      (tagaria--canonical-edge (car entry) other))
+    (cdr entry))))
+
+(defun tagaria--valid-migration-edge-p (edge names)
+  "Return non-nil when relation EDGE connects two distinct known NAMES."
+  (and (member (car edge) names)
+       (member (cadr edge) names)
+       (not (equal (car edge) (cadr edge)))))
+
+(defun tagaria--add-migration-edge (database edge)
+  "Add relation EDGE to DATABASE and return the resulting database."
+  (tagaria--set-related-pair database (car edge) (cadr edge) t))
+
+(defun tagaria--current-database-p (database path)
+  "Return non-nil when DATABASE already has the canonical format at PATH."
+  (condition-case nil
+      (equal database (tagaria--validate-database database path))
+    (error nil)))
+
+(defun tagaria--finish-migration-plan (path migrated edges dropped-fields)
+  "Build a migration plan at PATH from converted data.
+MIGRATED contains new entries, EDGES contains legacy relations, and
+DROPPED-FIELDS records legacy keys that cannot be represented."
+  (let* ((names (mapcar #'car migrated))
+         (valid-edges
+          (seq-filter (lambda (edge)
+                        (tagaria--valid-migration-edge-p edge names))
+                      edges))
+         (dropped
+          (sort (delete-dups
+                 (if (= (length valid-edges) (length edges))
+                     dropped-fields
+                   (cons :related dropped-fields)))
+                #'string-lessp))
+         (base-database
+          (tagaria--validate-database
+           (list :tags migrated :related nil) path)))
+    (tagaria--migration-plan-create
+     :database (seq-reduce #'tagaria--add-migration-edge
+                           valid-edges base-database)
+     :tag-count (length migrated)
+     :dropped dropped)))
+
+(defun tagaria--migration-plan (database path)
+  "Return a canonical migration plan for legacy DATABASE read at PATH."
+  (unless (and (proper-list-p database) (plist-member database :tags))
+    (error "Malformed legacy Tagaria database in %s" path))
+  (let ((tags (plist-get database :tags))
+        (top-level-fields
+         (cl-loop for (key _value) on database by #'cddr
+                  unless (memq key '(:tags :related))
+                  collect key)))
+    (unless (proper-list-p tags)
+      (error "Legacy Tagaria :tags must be a proper list in %s" path))
+    (let ((migration (mapcar (lambda (entry)
+                               (tagaria--migrate-legacy-entry entry path))
+                             tags)))
+      (tagaria--finish-migration-plan
+       path
+       (mapcar #'tagaria--migration-entry-entry migration)
+       (append (tagaria--legacy-top-level-edges
+                (or (plist-get database :related) nil) path)
+               (tagaria--migration-edges migration))
+       (append top-level-fields
+               (cl-loop for item in migration
+                        append (tagaria--migration-entry-dropped item)))))))
 
 ;;;###autoload
 (defun tagaria-migrate-database (&optional directory)
@@ -749,46 +882,31 @@ and characters from the same script receive no separator."
 The original database is copied to a timestamped backup before conversion."
   (interactive
    (list (read-directory-name
-          "Migrate Tagaria silo: "
+          "Migrate Tagaria realm: "
           (or tagaria-directory default-directory) nil t)))
   (let* ((root (tagaria--root directory))
          (path (tagaria--database-path root)))
     (unless (file-exists-p path)
       (user-error "No Tagaria database exists in %s" root))
-    (let* ((database (tagaria--read-one-form path))
-           (tags (and (proper-list-p database)
-                      (plist-member database :tags)
-                      (plist-get database :tags)))
-           (related (and (proper-list-p database)
-                         (plist-get database :related))))
-      (unless (and (proper-list-p database)
-                   (plist-member database :tags))
-        (error "Malformed legacy Tagaria database in %s" path))
-      (unless (proper-list-p tags)
-        (error "Legacy Tagaria :tags must be a proper list in %s" path))
-      (let* ((migrated
-              (mapcar
-               (lambda (entry)
-                 (unless (and (consp entry)
-                              (stringp (car entry))
-                              (not (string-empty-p (car entry))))
-                   (error "Malformed legacy Tagaria entry in %s: %S"
-                          path entry))
-                 (let ((description
-                        (tagaria--migrate-legacy-description
-                         (cdr entry) path)))
-                   (cons (car entry)
-                         (and description
-                              (not (string-empty-p description))
-                              (list :desc description)))))
-               tags))
-             (new-database
-              (tagaria--validate-database
-               (list :tags migrated :related related) path))
-             (backup (tagaria--backup-files root nil)))
-        (tagaria--write-database root new-database)
-        (message "Migrated Tagaria descriptions; backup: %s" backup)
-        (list :backup backup :tags (length migrated))))))
+    (let ((database (tagaria--read-one-form path)))
+      (if (tagaria--current-database-p database path)
+          (progn
+            (message "Tagaria database is already current")
+            (list :backup nil
+                  :tags (length (plist-get database :tags))
+                  :dropped nil
+                  :current t))
+        (let* ((plan (tagaria--migration-plan database path))
+               (backup (tagaria--backup-files root nil))
+               (dropped (tagaria--migration-plan-dropped plan)))
+          (tagaria--write-database
+           root (tagaria--migration-plan-database plan))
+          (message "Migrated %d tags; dropped fields: %s; backup: %s"
+                   (tagaria--migration-plan-tag-count plan)
+                   (if dropped (mapconcat #'symbol-name dropped ", ") "none")
+                   backup)
+          (list :backup backup :tags (tagaria--migration-plan-tag-count plan)
+                :dropped dropped :current nil))))))
 
 (defun tagaria--prune-backups (root)
   "Keep only the newest `tagaria-backup-keep' backups below ROOT."
@@ -820,24 +938,26 @@ Return the number of replacements."
             (setq count (1+ count))))))
     count))
 
-(defun tagaria--rewrite-file (file old-name new-name expected-count)
-  "Rewrite OLD-NAME to NEW-NAME in FILE exactly EXPECTED-COUNT times."
+(defun tagaria--apply-file-modification (file expected-count modify)
+  "Run MODIFY in the current buffer; require EXPECTED-COUNT edits to FILE."
+  (let ((count (funcall modify)))
+    (unless (= count expected-count)
+      (error "Tagaria occurrence count changed in %s" file))
+    count))
+
+(defun tagaria--modify-file (file expected-count modify)
+  "Use MODIFY to edit FILE exactly EXPECTED-COUNT times.
+MODIFY runs in a buffer containing FILE and returns its number of changes."
   (if-let ((buffer (find-buffer-visiting file)))
       (with-current-buffer buffer
         (when (buffer-modified-p)
           (error "Refusing to overwrite modified buffer: %s" (buffer-name)))
-        (let ((count (tagaria--replace-name-in-buffer old-name new-name)))
-          (unless (= count expected-count)
-            (error "Tagaria occurrence count changed in %s" file))
-          (save-buffer)
-          count))
+        (prog1 (tagaria--apply-file-modification file expected-count modify)
+          (save-buffer)))
     (with-temp-buffer
       (insert-file-contents file)
-      (let ((count (tagaria--replace-name-in-buffer old-name new-name)))
-        (unless (= count expected-count)
-          (error "Tagaria occurrence count changed in %s" file))
-        (write-region (point-min) (point-max) file nil 'silent)
-        count))))
+      (prog1 (tagaria--apply-file-modification file expected-count modify)
+        (write-region (point-min) (point-max) file nil 'silent)))))
 
 (defun tagaria--restore-backup (root backup files)
   "Restore FILES and the database in ROOT from BACKUP."
@@ -872,8 +992,10 @@ Return the number of replacements."
                      (tagaria--file-fingerprint file))
         (error "File changed during Tagaria rename: %s" file))
       (cl-incf total
-               (tagaria--rewrite-file
-                file old-name new-name (gethash file counts))))
+               (tagaria--modify-file
+                file (gethash file counts)
+                (lambda ()
+                  (tagaria--replace-name-in-buffer old-name new-name)))))
     total))
 
 (defun tagaria--delete-occurrences-in-buffer (occurrences)
@@ -886,26 +1008,6 @@ Return the number of replacements."
                         (tagaria-occurrence-start right)))))
       (cl-incf count (tagaria--delete-occurrence-text occurrence)))
     count))
-
-(defun tagaria--rewrite-file-without-occurrences
-    (file occurrences expected-count)
-  "Remove OCCURRENCES from FILE, requiring EXPECTED-COUNT deletions."
-  (if-let ((buffer (find-buffer-visiting file)))
-      (with-current-buffer buffer
-        (when (buffer-modified-p)
-          (error "Refusing to overwrite modified buffer: %s" (buffer-name)))
-        (let ((count (tagaria--delete-occurrences-in-buffer occurrences)))
-          (unless (= count expected-count)
-            (error "Tagaria occurrence count changed in %s" file))
-          (save-buffer)
-          count))
-    (with-temp-buffer
-      (insert-file-contents file)
-      (let ((count (tagaria--delete-occurrences-in-buffer occurrences)))
-        (unless (= count expected-count)
-          (error "Tagaria occurrence count changed in %s" file))
-        (write-region (point-min) (point-max) file nil 'silent)
-        count))))
 
 (defun tagaria--delete-tag-transaction
     (name directory expected-signature remove-entry)
@@ -942,8 +1044,11 @@ EXPECTED-SIGNATURE, when non-nil, must match the current references."
                 (error "File changed during Tagaria deletion: %s" file))
               (let ((file-occurrences (gethash file by-file)))
                 (cl-incf total
-                         (tagaria--rewrite-file-without-occurrences
-                          file file-occurrences (length file-occurrences)))))
+                         (tagaria--modify-file
+                          file (length file-occurrences)
+                          (lambda ()
+                            (tagaria--delete-occurrences-in-buffer
+                             file-occurrences))))))
             (when remove-entry
               (tagaria--write-database
                root (tagaria--delete-entry database name)))
@@ -968,18 +1073,16 @@ EXPECTED-SIGNATURE, when non-nil, guards the confirmed reference set."
    name directory expected-signature t))
 
 (defun tagaria--rename-relations (relations old-name new-name)
-  "Rename OLD-NAME to NEW-NAME throughout symmetric RELATIONS."
-  (seq-sort-by
-   #'car #'string-lessp
-   (mapcar
-    (lambda (entry)
-      (cons (if (string= (car entry) old-name) new-name (car entry))
-            (sort
-             (mapcar (lambda (other)
-                       (if (string= other old-name) new-name other))
-                     (cdr entry))
-             #'string-lessp)))
-    relations)))
+  "Rename OLD-NAME to NEW-NAME in undirected RELATIONS."
+  (sort
+   (delete-dups
+    (mapcar
+     (lambda (edge)
+       (tagaria--canonical-edge
+        (if (string= (car edge) old-name) new-name (car edge))
+        (if (string= (cadr edge) old-name) new-name (cadr edge))))
+     relations))
+   #'tagaria--edge-less-p))
 
 (defun tagaria--rename-database-entry
     (root database old-name new-name)

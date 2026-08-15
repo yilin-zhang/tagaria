@@ -41,8 +41,8 @@
 (declare-function tagaria-show-occurrences "tagaria")
 (declare-function tagaria-delete "tagaria")
 (declare-function tagaria-delete-occurrence "tagaria")
-(declare-function tagaria-edit-description "tagaria")
-(declare-function tagaria-edit-description-buffer "tagaria")
+(declare-function tagaria-edit-desc "tagaria")
+(declare-function tagaria-edit-desc-buffer "tagaria")
 (declare-function tagaria-add-related-tag "tagaria")
 (declare-function tagaria-delete-related-tag "tagaria")
 (declare-function tagaria-rename "tagaria")
@@ -213,8 +213,8 @@
     (define-key map (kbd "TAB") #'tagaria-detail-toggle-section)
     (define-key map (kbd "<tab>") #'tagaria-detail-toggle-section)
     (define-key map (kbd "g") #'tagaria-detail-refresh)
-    (define-key map (kbd "e") #'tagaria-edit-description)
-    (define-key map (kbd "E") #'tagaria-edit-description-buffer)
+    (define-key map (kbd "e") #'tagaria-edit-desc)
+    (define-key map (kbd "E") #'tagaria-edit-desc-buffer)
     (define-key map (kbd "a") #'tagaria-add-related-tag)
     (define-key map (kbd "d") #'tagaria-delete-occurrence)
     (define-key map (kbd "D") #'tagaria-delete)
@@ -380,7 +380,7 @@
     (mapc #'delete-overlay tagaria--detail-indicator-overlays)
     (setq tagaria--detail-indicator-overlays nil)
     (tagaria--render-tag-page
-     tagaria--detail-tag tagaria--silo-root description related occurrences)
+     tagaria--detail-tag tagaria--buffer-root description related occurrences)
     (tagaria--detail-install-indicators)
     (tagaria--detail-restore-sections collapsed)
     (tagaria--detail-restore-position position)
@@ -511,8 +511,8 @@
   (interactive)
   (unless (derived-mode-p 'tagaria-detail-mode)
     (user-error "Not in a Tagaria detail page"))
-  (let ((scan (tagaria-sync tagaria--silo-root)))
-    (tagaria--update-detail tagaria--silo-root tagaria--detail-tag scan)))
+  (let ((scan (tagaria-sync tagaria--buffer-root)))
+    (tagaria--update-detail tagaria--buffer-root tagaria--detail-tag scan)))
 
 (defun tagaria--refresh-detail-buffer (root &optional scan database)
   "Refresh ROOT's detail page from optional SCAN or freshly read DATABASE."
@@ -558,7 +558,7 @@ When EXISTING-ONLY is non-nil, do not create it."
       (with-current-buffer buffer
         (unless (derived-mode-p 'tagaria-detail-mode)
           (tagaria-detail-mode))
-        (setq tagaria--silo-root root
+        (setq tagaria--buffer-root root
               default-directory root)))
     buffer))
 
@@ -573,7 +573,7 @@ is non-nil, update only the cached state."
         (tagaria--cleanup-occurrence-preview))
       (setq scan (or scan tagaria--detail-scan))
       (unless scan
-        (error "Tagaria detail has no silo scan"))
+        (error "Tagaria detail has no realm scan"))
       (setq tagaria--detail-tag tag
             tagaria--detail-scan scan)
       (when list-buffer
@@ -581,7 +581,7 @@ is non-nil, update only the cached state."
       (unless no-render
         (tagaria--render-detail
          (plist-get (cdr (assoc tag (tagaria-scan-entries scan))) :desc)
-         (cdr (assoc tag (tagaria-scan-relations scan)))
+         (gethash tag (tagaria-scan-relations scan))
          (gethash tag (tagaria-scan-occurrence-table scan)))))
     buffer))
 
@@ -634,7 +634,7 @@ SCAN supplies its contents; LIST-BUFFER is shown again by `^'."
       (user-error "No related Tagaria tag at point"))
     (if (derived-mode-p 'tagaria-mode)
         (tagaria-show-occurrences tag)
-      (tagaria--update-detail tagaria--silo-root tag)
+      (tagaria--update-detail tagaria--buffer-root tag)
       (tagaria--detail-goto-property 'tagaria-section 'occurrences))))
 
 (defun tagaria-mouse-show-related (event)
@@ -652,7 +652,7 @@ SCAN supplies its contents; LIST-BUFFER is shown again by `^'."
          (tagaria--text-property-at-point 'tagaria-description-tag))
         (related (tagaria--text-property-at-point 'tagaria-related-tag)))
     (cond
-     (description (tagaria-edit-description tagaria--detail-tag))
+     (description (tagaria-edit-desc tagaria--detail-tag))
      (related (tagaria-show-related-at-point))
      (t (tagaria-visit-occurrence)))))
 

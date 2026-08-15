@@ -26,7 +26,7 @@
 
 (declare-function tagaria-mouse-visit-occurrence "tagaria-ref")
 (declare-function tagaria-mouse-show-related "tagaria-ref")
-(declare-function tagaria-mouse-edit-description "tagaria")
+(declare-function tagaria-mouse-edit-desc "tagaria")
 
 (defface tagaria-tag-face
   '((t :inherit font-lock-warning-face :weight normal :underline t))
@@ -58,8 +58,8 @@
   :type 'natnum
   :group 'tagaria)
 
-(defvar-local tagaria--silo-root nil
-  "Silo root represented by the current Tagaria buffer.")
+(defvar-local tagaria--buffer-root nil
+  "Realm root represented by the current Tagaria buffer.")
 
 (defvar tagaria-occurrence-text-map
   (let ((map (make-sparse-keymap)))
@@ -75,7 +75,7 @@
 
 (defvar tagaria-description-text-map
   (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'tagaria-mouse-edit-description)
+    (define-key map [mouse-1] #'tagaria-mouse-edit-desc)
     map)
   "Text-property keymap used on Tagaria descriptions.")
 
@@ -91,7 +91,7 @@
   (< (string-to-number (aref (cadr left) 2))
      (string-to-number (aref (cadr right) 2))))
 
-(defun tagaria--description-summary (description)
+(defun tagaria--desc-summary (description)
   "Return a one-line display summary for DESCRIPTION.
 Line breaks use the same visible marker convention as Decklet hints."
   (when description
@@ -105,7 +105,7 @@ Line breaks use the same visible marker convention as Decklet hints."
       (and (> (point) (point-min))
            (get-text-property (1- (point)) property))))
 
-(defun tagaria--interactive-description-text (text tag)
+(defun tagaria--interactive-desc-text (text tag)
   "Return a copy of TEXT with description interaction properties for TAG."
   (setq text (copy-sequence text))
   (add-text-properties
@@ -118,11 +118,11 @@ Line breaks use the same visible marker convention as Decklet hints."
    text)
   text)
 
-(defun tagaria--description-display (description tag)
+(defun tagaria--desc-display (description tag)
   "Return DESCRIPTION as interactive display text for TAG."
-  (tagaria--interactive-description-text
+  (tagaria--interactive-desc-text
    (if (and description (not (string-empty-p description)))
-       (tagaria--description-summary description)
+       (tagaria--desc-summary description)
      (propertize "(empty)" 'face 'shadow))
    tag))
 
@@ -175,7 +175,7 @@ Line breaks use the same visible marker convention as Decklet hints."
     (insert (propertize tag 'face 'tagaria-tag-face) "\n\n")
     (insert (propertize root 'face 'tagaria-path-face) "\n\n")
     (tagaria--insert-section-heading 'description "Description")
-    (insert (tagaria--interactive-description-text
+    (insert (tagaria--interactive-desc-text
              (if (and description (not (string-empty-p description)))
                  description
                (propertize "(empty)" 'face 'shadow))
@@ -203,7 +203,7 @@ Line breaks use the same visible marker convention as Decklet hints."
             (add-text-properties
              start (point)
              `(tagaria-occurrence ,occurrence
-                                   rear-nonsticky t))
+                                  rear-nonsticky t))
             ;; Leave the newline unfontified so adjacent rows remain
             ;; separate mouse-face regions instead of one large link.
             (add-text-properties

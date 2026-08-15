@@ -1,68 +1,99 @@
-# Tagaria
+# Tagaria 🏷️
 
-Tagaria manages textual tags inside directory silos. It works with ordinary
-text and does not depend on Org or Markdown. Requires Emacs 29.1 or newer.
+Tagaria manages inline tags in any text format. It provides a searchable tag
+list, descriptions, related tags, and references without depending on Org or
+Markdown. It requires Emacs 29.1 or newer.
 
 ## Setup
 
 ```elisp
 (use-package tagaria
   :load-path "~/.emacs.d/site-lisp/tagaria"
-  :commands (tagaria-list tagaria-switch-silo tagaria-insert
-             tagaria-search tagaria-migrate-database tagaria-minor-mode)
+  :commands (tagaria-list
+             tagaria-switch-realm
+             tagaria-insert
+             tagaria-search
+             tagaria-migrate-database
+             tagaria-minor-mode)
   :hook ((org-mode . tagaria-minor-mode)
          (markdown-mode . tagaria-minor-mode))
   :custom
   (tagaria-directory "~/notes/"))
 ```
 
-`tagaria-directory` is the default silo. When it is nil, Tagaria uses the
-nearest parent containing `.tagaria.eld`; `tagaria-switch-silo` changes the
-default dynamically. The first scan initializes a new silo. Markdown support
-requires the separately installed `markdown-mode` package.
+A realm is a directory tree managed as one tag collection. Tagaria scans the
+text files below its root for references, and stores the tags, descriptions,
+and relations in `.tagaria.eld` at that root.
 
-The default syntax is `@{example-tag}`. Customize `tagaria-tag-regexp` and
-`tagaria-format-function` together to use another syntax.
+`tagaria-directory` sets the default realm. Use `tagaria-switch-realm` to
+change it during a session. If no default is configured, Tagaria looks for the
+nearest parent directory containing `.tagaria.eld`.
 
-## Data
-
-Each tag has an optional multiline description. Related tags are stored as a
-validated symmetric mapping:
-
-```elisp
-(:tags (("alpha" :desc "First line\nSecond line") ("beta")))
- :related (("alpha" "beta") ("beta" "alpha")))
-```
-
-List summaries display description line breaks as `↵`; the detail page keeps
-the original line breaks. Run `tagaria-migrate-database` once for an older
-database: it creates a backup, keeps `:desc` and a valid top-level `:related`
-mapping, and discards other legacy fields.
+`tagaria-minor-mode` highlights tags and enables tag navigation. Tagaria does
+not add it to any major-mode hook by itself; the example above enables it in
+Org and Markdown buffers. Markdown integration requires `markdown-mode`.
 
 ## Use
 
-`tagaria-list` opens the silo list. `RET` enters a tag in the same window and
-`^` returns to the list. The detail page shows the silo path followed by
-foldable Description, Related Tags, and Occurrences sections. Related tags are
-clickable and open in the same detail view.
+The default tag syntax is `@{example-tag}`.
 
-`e` edits the description in the minibuffer; `E` opens a multiline edit buffer.
-The latter uses `text-mode` by default and is configurable through
-`tagaria-description-edit-mode-function`. `a` adds a related tag and `x`
-removes one. `RET` or `mouse-1` on a displayed description edits it directly.
-`r` renames, `g` refreshes, and `D` deletes the tag. In the list,
-`d` removes all textual references while preserving the tag; in detail, `d`
-removes the occurrence at point. Use `C-h m` for the complete map.
+1. Run `M-x tagaria-insert` to insert an existing tag or create a new one.
+2. Run `M-x tagaria-list` to scan the current realm and open its tag list.
+   The scan also discovers tags that were typed into files manually and creates
+   `.tagaria.eld` when the realm is new.
+3. Press `RET` on a tag to open its detail view, then press `^` to return.
 
-In `tagaria-minor-mode`, `C-c @` and `mouse-1` open the tag at point. Org uses
-its native `C-c C-o` dispatch; Markdown binds `C-c C-o` only on highlighted
-Tagaria tags. Moving through occurrences previews the source in another
-ordinary window; `RET` enters that existing source window.
+The List View shows every tag with its description, reference count, and
+related tags. The Detail View shows one tag's full description, related tags,
+and every reference. Move through the references to preview their source in
+another window; press `RET` to enter that source window. Section headings in
+the Detail View can be folded with `TAB`.
 
-Reference deletion preserves surrounding text sensibly; customize
-`tagaria-delete-separator-function` for adjacent-script behavior. Rename and
-bulk deletion scan the silo, preview or confirm destructive work, and create
-recoverable backups under `.tagaria-backups/`. `tagaria-backup-keep` controls
-retention.
+| Key | List View | Detail View |
+| --- | --- | --- |
+| `RET` / `o` | Open the item at point | Open the item at point |
+| `^` | — | Return to the List View |
+| `c` | Create a tag | — |
+| `e` | Edit the description in the minibuffer | Edit the description in the minibuffer |
+| `E` | Edit the description in a text buffer | Edit the description in a text buffer |
+| `a` | Add a related tag | Add a related tag |
+| `x` | Remove a related tag | Remove a related tag |
+| `d` | Remove all references to the tag | Remove the reference at point |
+| `D` | Delete the tag and all its references | Delete the tag and all its references |
+| `r` | Rename the tag | Rename the tag |
+| `g` | Refresh the List View | Refresh the Detail View |
+| `s` | Search tags | — |
+| `TAB` | — | Fold or expand a section |
+| `q` | Quit Tagaria | Quit Tagaria |
+
+Descriptions and related tags can also be opened with `mouse-1`. Multiline
+descriptions are edited in `text-mode` by default; customize
+`tagaria-desc-edit-mode` to use another major mode.
+
+In a buffer using `tagaria-minor-mode`, `C-c @` or `mouse-1` opens the tag at
+point. Org also supports its usual `C-c C-o`. In Markdown, `C-c C-o` works when
+point is on a highlighted Tagaria tag.
+
+Customize `tagaria-tag-regexp` and `tagaria-format-function` together to use a
+different tag syntax.
+
+## Data Storage
+
+You normally do not need to edit `.tagaria.eld` by hand. Its format is Emacs
+Lisp data:
+
+```elisp
+(:tags (("alpha" :desc "First line\nSecond line")
+        ("beta"))
+ :related (("alpha" "beta")))
+```
+
+Descriptions are optional and may contain multiple lines. Related tags are
+undirected, so each pair is stored only once.
+
+Run `M-x tagaria-migrate-database` to convert an older database. Tagaria makes
+a backup before migration. Rename and deletion operations also create backups
+under `.tagaria-backups/`; customize `tagaria-backup-keep` to control how many
+are retained.
 
 Tagaria is GPLv3-or-later; see [LICENSE](LICENSE).

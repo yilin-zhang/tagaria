@@ -1,4 +1,4 @@
-;;; tagaria.el --- Silo-based textual tag manager -*- lexical-binding: t; -*-
+;;; tagaria.el --- Realm-based textual tag manager -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Yilin Zhang
 
@@ -23,10 +23,10 @@
 
 ;;; Commentary:
 
-;; Tagaria discovers user-defined textual tags below a directory silo and
+;; Tagaria discovers user-defined textual tags below a realm directory and
 ;; associates each tag with an optional description and related tags.  It provides a
 ;; tabulated list with a shared detail page, minibuffer search and insertion,
-;; description editing, relation management, and recoverable silo-wide renames.
+;; description editing, relation management, and recoverable realm-wide renames.
 ;; Tagaria does not depend on Org or any other major mode.
 
 ;;; Code:
@@ -62,35 +62,35 @@
 (defvar-local tagaria--description-edit-p nil
   "Non-nil in a buffer used to edit one Tagaria description.")
 
-(defcustom tagaria-description-edit-mode-function #'text-mode
+(defcustom tagaria-desc-edit-mode #'text-mode
   "Function used to initialize a Tagaria description edit buffer."
   :type 'function
   :group 'tagaria)
 
 (defun tagaria--read-root (&optional force-prompt)
-  "Return the configured silo root, prompting when FORCE-PROMPT is non-nil."
+  "Return the configured realm root, prompting when FORCE-PROMPT is non-nil."
   (if (or force-prompt
           (and (null tagaria-directory)
-               (null (tagaria--find-enclosing-silo))))
+               (null (tagaria--find-enclosing-realm))))
       (tagaria--root
-       (read-directory-name "Tagaria silo: " default-directory nil t))
+       (read-directory-name "Tagaria realm: " default-directory nil t))
     (tagaria--root)))
 
 ;;;###autoload
-(defun tagaria-switch-silo (directory)
-  "Switch the global default Tagaria silo to DIRECTORY."
+(defun tagaria-switch-realm (directory)
+  "Switch the global default Tagaria realm to DIRECTORY."
   (interactive (list (read-directory-name
-                      "Default Tagaria silo: " default-directory nil t)))
+                      "Default Tagaria realm: " default-directory nil t)))
   (let ((root (tagaria--root directory)))
     (set-default 'tagaria-directory root)
-    (message "Default Tagaria silo: %s" root)))
+    (message "Default Tagaria realm: %s" root)))
 
 (defun tagaria--completion-annotation (candidate entries)
   "Return a description annotation for CANDIDATE found in ENTRIES."
   (when-let ((entry (assoc candidate entries)))
     (when-let ((description (plist-get (cdr entry) :desc)))
       (propertize
-       (concat "  " (tagaria--description-summary description))
+       (concat "  " (tagaria--desc-summary description))
        'face 'shadow))))
 
 (defun tagaria--read-tag (entries prompt &optional require-match initial)
@@ -114,18 +114,18 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
    ((derived-mode-p 'tagaria-detail-mode) tagaria--detail-tag)
    (t (tagaria--text-tag-at-point))))
 
-(defun tagaria-mouse-edit-description (event)
+(defun tagaria-mouse-edit-desc (event)
   "Edit the Tagaria description clicked by mouse EVENT."
   (interactive "e")
   (mouse-set-point event)
   (if-let ((tag (tagaria--text-property-at-point
-                  'tagaria-description-tag)))
-      (tagaria-edit-description tag)
+                 'tagaria-description-tag)))
+      (tagaria-edit-desc tag)
     (user-error "No Tagaria description at point")))
 
 (defun tagaria--context-root ()
   "Return the Tagaria root associated with the current context."
-  (or tagaria--silo-root (tagaria--read-root)))
+  (or tagaria--buffer-root (tagaria--read-root)))
 
 (defun tagaria--read-context-tag (prompt)
   "Return the tag at point or read one using PROMPT."
@@ -147,7 +147,7 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
                        'help-echo "mouse-1: show Tagaria detail"
                        'keymap tagaria-tag-text-map
                        'follow-link t)
-           (tagaria--description-display description name)
+           (tagaria--desc-display description name)
            (propertize (number-to-string occurrences) 'face 'shadow)
            (tagaria--related-tags-string related)))))
 
@@ -157,9 +157,7 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
                    tagaria--entry-filter
                    (tagaria-scan-entries tagaria--scan)))
          (table (tagaria-scan-occurrence-table tagaria--scan))
-         (relation-table (make-hash-table :test #'equal)))
-    (dolist (entry (tagaria-scan-relations tagaria--scan))
-      (puthash (car entry) (cdr entry) relation-table))
+         (relation-table (tagaria-scan-relations tagaria--scan)))
     (setq tabulated-list-entries
           (mapcar (lambda (entry)
                     (tagaria--list-entry entry table relation-table))
@@ -167,18 +165,33 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
 
 (defun tagaria--populate ()
   "Scan and populate the current Tagaria list."
-  (unless tagaria--silo-root
-    (error "This Tagaria list has no silo root"))
-  (setq tagaria--scan (tagaria-sync tagaria--silo-root))
+  (unless tagaria--buffer-root
+    (error "This Tagaria list has no realm root"))
+  (setq tagaria--scan (tagaria-sync tagaria--buffer-root))
   (tagaria--render-entries))
 
 (defun tagaria--goto-tag-row (tag)
-  "Move to TAG in the current tabulated list when TAG is non-nil."
+  "Move to TAG in the current tabulated list and return its position.
+Leave point unchanged and return nil when TAG is absent."
   (when tag
-    (goto-char (point-min))
-    (while (and (not (eobp))
-                (not (equal (tabulated-list-get-id) tag)))
-      (forward-line 1))))
+    (let (target)
+      (save-excursion
+        (goto-char (point-min))
+        (while (and (not target) (not (eobp)))
+          (when (equal (tabulated-list-get-id) tag)
+            (setq target (point)))
+          (unless target (forward-line 1))))
+      (when target
+        (goto-char target)))))
+
+(defun tagaria--adjacent-tag-row ()
+  "Return the next row's tag, or the previous row's tag at the end."
+  (or (save-excursion
+        (forward-line 1)
+        (tabulated-list-get-id))
+      (save-excursion
+        (forward-line -1)
+        (tabulated-list-get-id))))
 
 (defun tagaria-refresh ()
   "Rescan and refresh the current Tagaria list."
@@ -200,7 +213,7 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
   (let ((description-tag
          (tagaria--text-property-at-point 'tagaria-description-tag)))
     (cond
-     (description-tag (tagaria-edit-description description-tag))
+     (description-tag (tagaria-edit-desc description-tag))
      ((tagaria--text-property-at-point 'tagaria-related-tag)
       (tagaria-show-related-at-point))
      (t (tagaria-show-occurrences)))))
@@ -212,17 +225,21 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (when (and (derived-mode-p 'tagaria-mode)
-                   tagaria--silo-root
-                   (file-equal-p tagaria--silo-root root))
-          (let ((tag (tabulated-list-get-id)))
+                   tagaria--buffer-root
+                   (file-equal-p tagaria--buffer-root root))
+          (let* ((tag (tabulated-list-get-id))
+                 (adjacent (tagaria--adjacent-tag-row))
+                 (new-scan
+                  (or scan
+                      (tagaria--update-scan-data tagaria--scan database))))
             ;; The scan is the single List/Detail snapshot.  Data-only edits
             ;; update its DB slots so opening Detail cannot revive stale data.
-            (setq tagaria--scan
-                  (or scan
-                      (tagaria--update-scan-data tagaria--scan database)))
+            (setq tagaria--scan new-scan)
             (tagaria--render-entries)
             (tabulated-list-print t)
-            (tagaria--goto-tag-row tag)))))
+            (unless (or (tagaria--goto-tag-row tag)
+                        (tagaria--goto-tag-row adjacent))
+              (goto-char (point-min)))))))
     (tagaria--refresh-detail-buffer root scan database)))
 
 (defvar tagaria-mode-map
@@ -232,8 +249,8 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
     (define-key map (kbd "o") #'tagaria-show-occurrences)
     (define-key map (kbd "g") #'tagaria-refresh)
     (define-key map (kbd "c") #'tagaria-create)
-    (define-key map (kbd "e") #'tagaria-edit-description)
-    (define-key map (kbd "E") #'tagaria-edit-description-buffer)
+    (define-key map (kbd "e") #'tagaria-edit-desc)
+    (define-key map (kbd "E") #'tagaria-edit-desc-buffer)
     (define-key map (kbd "a") #'tagaria-add-related-tag)
     (define-key map (kbd "d") #'tagaria-delete-all-occurrences)
     (define-key map (kbd "x") #'tagaria-delete-related-tag)
@@ -245,7 +262,7 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
   "Keymap for `tagaria-mode'.")
 
 (define-derived-mode tagaria-mode tabulated-list-mode "Tagaria"
-  "Major mode for browsing and managing a Tagaria silo."
+  "Major mode for browsing and managing a Tagaria realm."
   (setq tabulated-list-format
         [("Tag" 22 t)
          ("Description" 32 t)
@@ -269,7 +286,7 @@ rescanning when the caller already has current data."
     (with-current-buffer buffer
       (unless (derived-mode-p 'tagaria-mode)
         (tagaria-mode))
-      (setq tagaria--silo-root root
+      (setq tagaria--buffer-root root
             tagaria--entry-filter (or predicate #'identity))
       (setq default-directory root)
       (if scan
@@ -289,8 +306,8 @@ rescanning when the caller already has current data."
 
 ;;;###autoload
 (defun tagaria-list (&optional choose-directory)
-  "Open the Tagaria list for the configured silo.
-With prefix argument CHOOSE-DIRECTORY, prompt for a silo without changing
+  "Open the Tagaria list for the configured realm.
+With prefix argument CHOOSE-DIRECTORY, prompt for a realm without changing
 `tagaria-directory'."
   (interactive "P")
   (tagaria--open-list (tagaria--read-root choose-directory)))
@@ -308,7 +325,7 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a silo without changing
   (barf-if-buffer-read-only)
   (let ((root (tagaria--read-root)))
     (unless (tagaria--buffer-belongs-to-root-p root)
-      (user-error "Current buffer is outside the Tagaria silo: %s" root))
+      (user-error "Current buffer is outside the Tagaria realm: %s" root))
     (let* ((entries (tagaria-tags root))
            (name (tagaria--read-tag entries "Insert tag: "))
            (existing (assoc name entries))
@@ -336,27 +353,27 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a silo without changing
     (tagaria--refresh-list-buffers root)
     (message "Created Tagaria tag %s" name)))
 
-(defun tagaria--store-description (root tag value)
+(defun tagaria--store-desc (root tag value)
   "Store string VALUE as TAG's description under ROOT."
-  (let ((value (unless (string-empty-p value) value)))
-    (if (equal value (tagaria-description tag root))
+  (let ((value (tagaria--normalize-desc value)))
+    (if (equal value (tagaria-desc tag root))
         (message "Description for %s is unchanged" tag)
-      (tagaria-set-description tag value root)
+      (tagaria-set-desc tag value root)
       (tagaria--refresh-list-buffers root)
       (message "Updated description for %s" tag))))
 
 ;;;###autoload
-(defun tagaria-edit-description (&optional tag)
+(defun tagaria-edit-desc (&optional tag)
   "Edit TAG's description in the minibuffer."
   (interactive)
   (let* ((root (tagaria--context-root))
          (name (or tag (tagaria--read-context-tag "Edit description for: ")))
          (value (read-string "Description: "
-                             (tagaria-description name root))))
-    (tagaria--store-description root name value)))
+                             (tagaria-desc name root))))
+    (tagaria--store-desc root name value)))
 
 ;;;###autoload
-(defun tagaria-edit-description-buffer (&optional tag)
+(defun tagaria-edit-desc-buffer (&optional tag)
   "Edit TAG's multiline description in a regular buffer."
   (interactive)
   (let* ((root (tagaria--context-root))
@@ -370,33 +387,33 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a silo without changing
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (when-let ((description (tagaria-description name root)))
+        (when-let ((description (tagaria-desc name root)))
           (insert description)))
-      (funcall tagaria-description-edit-mode-function)
-      (local-set-key (kbd "C-c C-c") #'tagaria-description-edit-commit)
-      (local-set-key (kbd "C-c C-k") #'tagaria-description-edit-cancel)
+      (funcall tagaria-desc-edit-mode)
+      (local-set-key (kbd "C-c C-c") #'tagaria-desc-edit-commit)
+      (local-set-key (kbd "C-c C-k") #'tagaria-desc-edit-cancel)
       (setq-local header-line-format
                   '(" C-c C-c save description   C-c C-k cancel "))
-      (setq tagaria--silo-root root
+      (setq tagaria--buffer-root root
             tagaria--edited-tag name
             tagaria--description-edit-p t)
       (set-buffer-modified-p nil)
       (goto-char (point-min)))
     (pop-to-buffer buffer)))
 
-(defun tagaria-description-edit-commit ()
+(defun tagaria-desc-edit-commit ()
   "Save the current buffer as one Tagaria description."
   (interactive)
   (unless tagaria--description-edit-p
     (user-error "Not in a Tagaria description edit buffer"))
-  (let ((root tagaria--silo-root)
+  (let ((root tagaria--buffer-root)
         (tag tagaria--edited-tag)
         (value (buffer-substring-no-properties (point-min) (point-max))))
-    (tagaria--store-description root tag value)
+    (tagaria--store-desc root tag value)
     (set-buffer-modified-p nil)
     (kill-buffer (current-buffer))))
 
-(defun tagaria-description-edit-cancel ()
+(defun tagaria-desc-edit-cancel ()
   "Cancel the current Tagaria description edit."
   (interactive)
   (unless tagaria--description-edit-p
@@ -405,12 +422,13 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a silo without changing
   (kill-buffer (current-buffer)))
 
 (defun tagaria-add-related-tag (&optional tag related)
-  "Add a symmetric relation between TAG and RELATED."
+  "Add an undirected relation between TAG and RELATED."
   (interactive)
   (let* ((root (tagaria--context-root))
          (name (or tag (tagaria--read-context-tag "Relate tag: ")))
          (database (tagaria--read-database root))
-         (existing (cdr (assoc name (plist-get database :related))))
+         (existing (tagaria--related-tags-in
+                    name (plist-get database :related)))
          (choices (seq-remove
                    (lambda (candidate)
                      (or (string= candidate name) (member candidate existing)))
@@ -422,12 +440,13 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a silo without changing
     (message "Related %s and %s" name other)))
 
 (defun tagaria-delete-related-tag (&optional tag related)
-  "Delete the symmetric relation between TAG and RELATED."
+  "Delete the undirected relation between TAG and RELATED."
   (interactive)
   (let* ((root (tagaria--context-root))
          (name (or tag (tagaria--read-context-tag "Unrelate tag: ")))
          (database (tagaria--read-database root))
-         (existing (cdr (assoc name (plist-get database :related))))
+         (existing (tagaria--related-tags-in
+                    name (plist-get database :related)))
          (other (or related
                     (get-text-property (point) 'tagaria-related-tag)
                     (completing-read "Remove related tag: " existing nil t))))
@@ -445,7 +464,7 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a silo without changing
   (unless (derived-mode-p 'tagaria-detail-mode)
     (user-error "Not in a Tagaria detail page"))
   (let* ((occurrence (tagaria--occurrence-at-point))
-         (root tagaria--silo-root)
+         (root tagaria--buffer-root)
          (tag tagaria--detail-tag))
     (unless occurrence
       (user-error "No Tagaria occurrence on this line"))
@@ -468,7 +487,7 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a silo without changing
 
 ;;;###autoload
 (defun tagaria-show-occurrences (&optional tag)
-  "Show TAG's description, related tags, and occurrences in the current silo."
+  "Show TAG's description, related tags, and occurrences in the current realm."
   (interactive)
   (let* ((from-list (derived-mode-p 'tagaria-mode))
          (root (tagaria--context-root))
@@ -512,16 +531,14 @@ Abort when any answer is not yes.  Return non-nil if one was saved."
       (setq saved t))
     saved))
 
-(defun tagaria--show-rename-preview (root old-name new-name occurrences)
-  "Preview renaming OLD-NAME to NEW-NAME for OCCURRENCES in ROOT."
-  (let ((buffer (get-buffer-create "*Tagaria Rename Preview*")))
+(defun tagaria--show-operation-preview (title root occurrences empty-message)
+  "Show TITLE and OCCURRENCES in ROOT, using EMPTY-MESSAGE when empty."
+  (let ((buffer (get-buffer-create "*Tagaria Operation Preview*")))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
         (special-mode)
-        (insert (propertize
-                 (format "Rename %s → %s\n\n" old-name new-name)
-                 'face 'bold))
+        (insert (propertize (concat title "\n\n") 'face 'bold))
         (if occurrences
             (dolist (occurrence occurrences)
               (insert (format "%s:%d\n  %s\n"
@@ -529,14 +546,27 @@ Abort when any answer is not yes.  Return non-nil if one was saved."
                                (tagaria-occurrence-file occurrence) root)
                               (tagaria-occurrence-line occurrence)
                               (tagaria-occurrence-context occurrence))))
-          (insert "No textual occurrences; only the tag data will be renamed.\n"))
+          (insert empty-message "\n"))
         (goto-char (point-min))))
     (display-buffer buffer)
     buffer))
 
+(cl-defun tagaria--confirm-with-preview
+    (&key title root occurrences empty-message prompt confirm-function cancelled)
+  "Preview an operation and confirm PROMPT with CONFIRM-FUNCTION.
+TITLE, ROOT, OCCURRENCES, and EMPTY-MESSAGE describe the preview.  Signal
+a user error containing CANCELLED when confirmation is declined."
+  (let ((preview (tagaria--show-operation-preview
+                  title root occurrences empty-message)))
+    (unwind-protect
+        (unless (funcall confirm-function prompt)
+          (user-error "%s" cancelled))
+      (when (buffer-live-p preview)
+        (kill-buffer preview)))))
+
 ;;;###autoload
 (defun tagaria-rename (&optional old-name new-name)
-  "Rename OLD-NAME to NEW-NAME across the current Tagaria silo."
+  "Rename OLD-NAME to NEW-NAME across the current Tagaria realm."
   (interactive)
   (let* ((root (tagaria--context-root))
          (old (or old-name (tagaria--read-context-tag "Rename tag: ")))
@@ -550,26 +580,26 @@ Abort when any answer is not yes.  Return non-nil if one was saved."
       (setq scan (tagaria-sync root)
             occurrences
             (gethash old (tagaria-scan-occurrence-table scan))))
-    (let ((signature (tagaria--occurrence-signature occurrences))
-          preview)
-      (unwind-protect
-          (progn
-            (setq preview
-                  (tagaria--show-rename-preview root old new occurrences))
-            (unless (y-or-n-p
-                     (format "Rename %s to %s in %d occurrence%s?"
-                             old new (length occurrences)
-                             (if (= (length occurrences) 1) "" "s")))
-              (user-error "Tagaria rename cancelled"))
-            (let ((result (tagaria-rename-tag old new root signature)))
-              (tagaria--retarget-detail root old new)
-              (tagaria--refresh-list-buffers root t)
-              (message "Renamed %s to %s in %d occurrence%s; backup: %s"
-                       old new (plist-get result :count)
-                       (if (= (plist-get result :count) 1) "" "s")
-                       (plist-get result :backup))))
-        (when (buffer-live-p preview)
-          (kill-buffer preview))))))
+    (let ((signature (tagaria--occurrence-signature occurrences)))
+      (tagaria--confirm-with-preview
+       :title (format "Rename %s → %s" old new)
+       :root root
+       :occurrences occurrences
+       :empty-message "No textual occurrences; only tag data will be renamed."
+       :prompt (format "Rename %s to %s in %s?"
+                       old new
+                       (tagaria--count-phrase
+                        (length occurrences) "occurrence"))
+       :confirm-function #'y-or-n-p
+       :cancelled "Tagaria rename cancelled")
+      (let ((result (tagaria-rename-tag old new root signature)))
+        (tagaria--retarget-detail root old new)
+        (tagaria--refresh-list-buffers root t)
+        (message "Renamed %s to %s in %s; backup: %s"
+                 old new
+                 (tagaria--count-phrase
+                  (plist-get result :count) "occurrence")
+                 (plist-get result :backup))))))
 
 ;;;###autoload
 (defun tagaria-delete-all-occurrences (&optional tag)
@@ -587,18 +617,25 @@ Abort when any answer is not yes.  Return non-nil if one was saved."
         (setq scan (tagaria-sync root)
               occurrences
               (gethash name (tagaria-scan-occurrence-table scan))))
-      (unless (y-or-n-p
-               (format "Delete all %d textual reference%s to %s?"
-                       (length occurrences)
-                       (if (= (length occurrences) 1) "" "s") name))
-        (user-error "Tagaria reference deletion cancelled"))
+      (tagaria--confirm-with-preview
+       :title (format "Delete every reference to %s" name)
+       :root root
+       :occurrences occurrences
+       :empty-message "No textual references."
+       :prompt (format "Delete all %s to %s?"
+                       (tagaria--count-phrase
+                        (length occurrences) "textual reference")
+                       name)
+       :confirm-function #'yes-or-no-p
+       :cancelled "Tagaria reference deletion cancelled")
       (let ((result
              (tagaria-delete-occurrences
               name root (tagaria--occurrence-signature occurrences))))
         (tagaria--refresh-list-buffers root t)
-        (message "Deleted %d reference%s to %s; backup: %s"
-                 (plist-get result :count)
-                 (if (= (plist-get result :count) 1) "" "s") name
+        (message "Deleted %s to %s; backup: %s"
+                 (tagaria--count-phrase
+                  (plist-get result :count) "reference")
+                 name
                  (plist-get result :backup))))))
 
 ;;;###autoload
@@ -615,21 +652,29 @@ Abort when any answer is not yes.  Return non-nil if one was saved."
       (setq scan (tagaria-sync root)
             occurrences
             (gethash name (tagaria-scan-occurrence-table scan))))
-    (unless (y-or-n-p
-             (if occurrences
-                 (format "Delete tag %s and its %d reference%s?"
-                         name (length occurrences)
-                         (if (= (length occurrences) 1) "" "s"))
-               (format "Delete tag %s?" name)))
-      (user-error "Tagaria deletion cancelled"))
+    (if occurrences
+        (tagaria--confirm-with-preview
+         :title (format "Delete tag %s and every reference" name)
+         :root root
+         :occurrences occurrences
+         :empty-message "No textual references."
+         :prompt (format "Delete tag %s and its %s?"
+                         name
+                         (tagaria--count-phrase
+                          (length occurrences) "reference"))
+         :confirm-function #'yes-or-no-p
+         :cancelled "Tagaria deletion cancelled")
+      (unless (yes-or-no-p (format "Delete tag %s?" name))
+        (user-error "Tagaria deletion cancelled")))
     (let ((result
            (tagaria-delete-tag
             name root (tagaria--occurrence-signature occurrences))))
-    (tagaria--close-detail root name)
-    (tagaria--refresh-list-buffers root)
-      (message "Deleted Tagaria tag %s and %d reference%s; backup: %s"
-               name (plist-get result :count)
-               (if (= (plist-get result :count) 1) "" "s")
+      (tagaria--close-detail root name)
+      (tagaria--refresh-list-buffers root)
+      (message "Deleted Tagaria tag %s and %s; backup: %s"
+               name
+               (tagaria--count-phrase
+                (plist-get result :count) "reference")
                (plist-get result :backup)))))
 
 (easy-menu-define tagaria-menu tagaria-mode-map
@@ -637,8 +682,8 @@ Abort when any answer is not yes.  Return non-nil if one was saved."
   '("Tagaria"
     ["Show occurrences" tagaria-show-occurrences t]
     ["Create tag" tagaria-create t]
-    ["Edit description" tagaria-edit-description t]
-    ["Edit description in buffer" tagaria-edit-description-buffer t]
+    ["Edit description" tagaria-edit-desc t]
+    ["Edit description in buffer" tagaria-edit-desc-buffer t]
     ["Add related tag" tagaria-add-related-tag t]
     ["Remove related tag" tagaria-delete-related-tag t]
     "---"

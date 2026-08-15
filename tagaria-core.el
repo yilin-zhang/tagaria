@@ -423,21 +423,6 @@ Operate on DIRECTORY's realm, defaulting to the configured one."
        root (tagaria--set-related-pair database first second present)))
     present))
 
-(defun tagaria-unregister (name &optional directory)
-  "Remove NAME from DIRECTORY's database when it has no references.
-Signal a `user-error' when NAME still has textual occurrences."
-  (let* ((root (tagaria--root directory))
-         (scan (tagaria-scan-realm root))
-         (occurrences (gethash name (tagaria-scan-occurrence-table scan)))
-         (database (tagaria--read-database root)))
-    (when occurrences
-      (user-error "Cannot remove %s; it still has %s"
-                  name (tagaria--count-phrase
-                        (length occurrences) "occurrence")))
-    (tagaria--require-entry database name)
-    (tagaria--write-database root (tagaria--delete-entry database name))
-    name))
-
 (defun tagaria--binary-file-p (file)
   "Test whether the beginning of FILE has a NUL byte."
   (condition-case nil

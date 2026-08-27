@@ -367,7 +367,7 @@ Signal an error without modifying PATH when the value is malformed."
 
 (defun tagaria-desc (name &optional directory)
   "Return NAME's description in DIRECTORY, or nil."
-  (when-let ((entry (tagaria--entry
+  (when-let* ((entry (tagaria--entry
                      (tagaria--read-database (tagaria--root directory)) name)))
     (tagaria--entry-desc entry)))
 
@@ -530,7 +530,7 @@ Operate on DIRECTORY's realm, defaulting to the configured one."
 
 (defun tagaria--scan-file (file occurrence-table)
   "Scan FILE and add results to OCCURRENCE-TABLE."
-  (if-let ((visiting-buffer (find-buffer-visiting file)))
+  (if-let* ((visiting-buffer (find-buffer-visiting file)))
       (with-current-buffer visiting-buffer
         (save-restriction
           (widen)
@@ -938,7 +938,7 @@ Return the number of replacements."
 (defun tagaria--modify-file (file expected-count modify)
   "Use MODIFY to edit FILE exactly EXPECTED-COUNT times.
 MODIFY runs in a buffer containing FILE and returns its number of changes."
-  (if-let ((buffer (find-buffer-visiting file)))
+  (if-let* ((buffer (find-buffer-visiting file)))
       (with-current-buffer buffer
         (when (buffer-modified-p)
           (error "Refusing to overwrite modified buffer: %s" (buffer-name)))
@@ -955,7 +955,7 @@ MODIFY runs in a buffer containing FILE and returns its number of changes."
     (let ((source (expand-file-name (file-relative-name file root) backup)))
       (when (file-exists-p source)
         (copy-file source file t t t t))
-      (when-let ((buffer (find-buffer-visiting file)))
+      (when-let* ((buffer (find-buffer-visiting file)))
         (with-current-buffer buffer
           (set-buffer-modified-p nil)
           (revert-buffer t t)))))
@@ -1011,7 +1011,7 @@ EXPECTED-SIGNATURE, when non-nil, must match the current references."
     (when (and expected-signature
                (not (equal expected-signature signature)))
       (user-error "Tagaria occurrences changed after confirmation; retry"))
-    (when-let ((buffers
+    (when-let* ((buffers
                 (tagaria--modified-buffers-for-occurrences occurrences)))
       (user-error "Modified buffers prevent deletion: %s"
                   (mapconcat #'buffer-name buffers ", ")))
@@ -1118,7 +1118,7 @@ Refuse modified visiting buffers.  Return a plist containing :count and
       (when (and expected-signature
                  (not (equal expected-signature current-signature)))
         (user-error "Tagaria occurrences changed after preview; retry rename"))
-      (when-let ((buffers
+      (when-let* ((buffers
                   (tagaria--modified-buffers-for-occurrences occurrences)))
         (user-error "Modified buffers prevent rename: %s"
                     (mapconcat #'buffer-name buffers ", ")))

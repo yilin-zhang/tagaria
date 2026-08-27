@@ -272,7 +272,7 @@ Summarize it to a single line unless FULL is non-nil."
 
 (defun tagaria--org-open-at-point ()
   "Open a Tagaria tag at point through Org's native dispatcher."
-  (when-let ((tag (tagaria--text-tag-at-point)))
+  (when-let* ((tag (tagaria--text-tag-at-point)))
     (tagaria-show-occurrences tag)
     t))
 
@@ -336,8 +336,8 @@ Summarize it to a single line unless FULL is non-nil."
 
 (defun tagaria--completion-annotation (candidate entries)
   "Return a description annotation for CANDIDATE found in ENTRIES."
-  (when-let ((entry (assoc candidate entries)))
-    (when-let ((description (tagaria--entry-desc entry)))
+  (when-let* ((entry (assoc candidate entries)))
+    (when-let* ((description (tagaria--entry-desc entry)))
       (propertize
        (concat "  " (tagaria--desc-summary description))
        'face 'shadow))))
@@ -367,7 +367,7 @@ REQUIRE-MATCH and INITIAL are passed to `completing-read'."
   "Edit the Tagaria description clicked by mouse EVENT."
   (interactive "e")
   (mouse-set-point event)
-  (if-let ((tag (tagaria--text-property-at-point
+  (if-let* ((tag (tagaria--text-property-at-point
                  'tagaria-description-tag)))
       (tagaria-edit-desc tag)
     (user-error "No Tagaria description at point")))
@@ -629,7 +629,7 @@ With prefix argument CHOOSE-DIRECTORY, prompt for a realm without changing
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (when-let ((description (tagaria-desc name root)))
+        (when-let* ((description (tagaria-desc name root)))
           (insert description)))
       (funcall tagaria-desc-edit-mode)
       (local-set-key (kbd "C-c C-c") #'tagaria-desc-edit-commit)
@@ -1054,7 +1054,7 @@ a user error containing CANCELLED when confirmation is declined."
 
 (defun tagaria--detail-update-indicator (collapsed)
   "Show the current heading's indicator in COLLAPSED state."
-  (when-let ((overlay
+  (when-let* ((overlay
               (seq-find
                (lambda (candidate)
                  (and (overlay-get candidate 'tagaria-detail-indicator)
@@ -1098,7 +1098,7 @@ a user error containing CANCELLED when confirmation is declined."
   (goto-char (point-min))
   (let (first found)
     (while (and (not found) (not (eobp)))
-      (when-let ((occurrence (tagaria--occurrence-at-point)))
+      (when-let* ((occurrence (tagaria--occurrence-at-point)))
         (unless first (setq first (point)))
         (when (equal key (tagaria--occurrence-key occurrence))
           (setq found (point))))
@@ -1108,7 +1108,7 @@ a user error containing CANCELLED when confirmation is declined."
 (defun tagaria--detail-goto-property (property value)
   "Move to the first text whose PROPERTY equals VALUE."
   (goto-char (point-min))
-  (when-let ((match (text-property-search-forward property value t)))
+  (when-let* ((match (text-property-search-forward property value t)))
     (goto-char (prop-match-beginning match))
     t))
 
@@ -1234,7 +1234,7 @@ a user error containing CANCELLED when confirmation is declined."
   ;; Preview is keyboard-driven.  Merely hovering a row must remain free of
   ;; file/window side effects; mouse-1 performs the explicit visit instead.
   (when (derived-mode-p 'tagaria-detail-mode)
-    (if-let ((occurrence (tagaria--occurrence-at-point)))
+    (if-let* ((occurrence (tagaria--occurrence-at-point)))
         (tagaria--preview-occurrence occurrence)
       (tagaria--cleanup-occurrence-preview))))
 
@@ -1278,7 +1278,7 @@ a user error containing CANCELLED when confirmation is declined."
 
 (defun tagaria--refresh-detail-buffer (root &optional scan database)
   "Refresh ROOT's detail page from optional SCAN or freshly read DATABASE."
-  (when-let ((buffer (tagaria--detail-buffer root t)))
+  (when-let* ((buffer (tagaria--detail-buffer root t)))
     (with-current-buffer buffer
       (when tagaria--detail-tag
         (unless scan
@@ -1290,14 +1290,14 @@ a user error containing CANCELLED when confirmation is declined."
 
 (defun tagaria--retarget-detail (root old-name new-name)
   "Retarget ROOT's detail page from OLD-NAME to NEW-NAME."
-  (when-let ((buffer (tagaria--detail-buffer root t)))
+  (when-let* ((buffer (tagaria--detail-buffer root t)))
     (with-current-buffer buffer
       (when (equal tagaria--detail-tag old-name)
         (setq tagaria--detail-tag new-name)))))
 
 (defun tagaria--close-detail (root tag)
   "Clear the detail page when it represents TAG in ROOT."
-  (when-let ((buffer (tagaria--detail-buffer root t)))
+  (when-let* ((buffer (tagaria--detail-buffer root t)))
     (with-current-buffer buffer
       (when (equal tagaria--detail-tag tag)
         (setq tagaria--occurrence-preview-window nil

@@ -8,7 +8,7 @@ Markdown. It requires Emacs 29.1 or newer.
 
 ```elisp
 (use-package tagaria
-  :load-path "~/.emacs.d/site-lisp/tagaria"
+  :vc (:url "https://github.com/yilin-zhang/tagaria" :rev :newest)
   :commands (tagaria-list
              tagaria-switch-realm
              tagaria-insert

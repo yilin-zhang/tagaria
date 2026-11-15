@@ -67,6 +67,9 @@
 (defvar-local tagaria--buffer-root nil
   "Realm root represented by the current Tagaria buffer.")
 
+(defvar-local tagaria--detail-tag nil
+  "Tag represented by the current detail page.")
+
 (defvar tagaria-occurrence-text-map
   (let ((map (make-sparse-keymap)))
     (define-key map [mouse-1] #'tagaria-mouse-visit-occurrence)
@@ -928,9 +931,6 @@ a user error containing CANCELLED when confirmation is declined."
     ["Refresh" tagaria-refresh t]))
 
 ;;; Detail view
-
-(defvar-local tagaria--detail-tag nil
-  "Tag represented by the current detail page.")
 
 (defvar-local tagaria--detail-scan nil
   "Scan cached by the current detail page.")
